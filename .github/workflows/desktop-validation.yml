@@ -1,0 +1,38 @@
+name: Desktop validation
+
+on:
+  push:
+    branches: [build-first-prototype]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+      - name: Build the synthetic Windows x64 ZIP
+        shell: pwsh
+        run: ./windows/build-app.ps1 (Join-Path $env:RUNNER_TEMP 'GYDT-windows-x64-synthetic.zip')
+
+  macos:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+      - name: Build the synthetic Apple Silicon ZIP
+        run: ./macos/build-app.sh "$RUNNER_TEMP/GYDT-macos-arm64-synthetic.zip"

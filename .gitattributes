@@ -1,0 +1,6 @@
+/data/substances-catalog.xml text eol=lf
+/templates/results-email.eml -text whitespace=cr-at-eol
+/templates/results-sms.txt -text
+/scripts/synthetic-inputs.sha256 text eol=lf
+/assets/app-icon.svg -text whitespace=cr-at-eol
+/assets/app-icon.ico -text

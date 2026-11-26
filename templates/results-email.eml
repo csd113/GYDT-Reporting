@@ -1,0 +1,20 @@
+Subject: Synthetic sample report
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="fixture"
+
+--fixture
+Content-Type: text/plain; charset="UTF-8"
+
+Hello. This is a synthetic example. We have analyzed a synthetic specimen.
+
+You also can find the test results on the webpage: https://example.invalid/results
+Synthetic example only.
+
+--fixture
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr"> We have analyzed your
+sample under the code word ---.<ol><li>Fixture list=
+.</li></ol><p>Synthetic example only.</p></div>
+--fixture--

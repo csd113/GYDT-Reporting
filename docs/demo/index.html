@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en-CA">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GYDT Sample Reporting | Interface demo</title>
+<style>
+:root{color-scheme:light;--ink:#18233e;--muted:#546184;--accent:#3538ce;--blue:#0906a9;--line:#7785a3;--wash:#e7f1fb;--surface:#fbfcfe;--shadow:#23375b22}
+*{box-sizing:border-box}
+body{margin:0;padding:clamp(12px,2.7vw,44px);background:#edf2f8;color:var(--ink);font:15px/1.35 system-ui,-apple-system,"Segoe UI",sans-serif}
+.demo-note{max-width:1430px;margin:0 auto 10px;display:flex;gap:8px 16px;justify-content:space-between;flex-wrap:wrap;color:var(--muted);font-size:13px}
+.demo-note strong{color:#343b80}
+.app{max-width:1430px;margin:auto;border:1px solid #9facd2;border-radius:12px;overflow:hidden;background:linear-gradient(110deg,#f4f7fc,var(--wash));box-shadow:0 18px 48px #27365c24}
+.titlebar{display:flex;align-items:center;gap:12px;padding:12px 20px;background:#dce7f5;border-bottom:1px solid #c9d7eb}
+.app-icon{width:32px;height:32px;display:block}.titlebar h1{font-size:20px;line-height:1;margin:0;font-weight:720;letter-spacing:-.35px}
+.tabbar{--tab-inline-padding:14px;display:flex;align-items:stretch;gap:4px;padding:12px 20px 0;border-bottom:1px solid #bac9e8;overflow:auto}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;user-select:none;border:1px solid #b4bfe2;background:#f7faff;border-radius:7px;padding:6px 12px;font-weight:630;min-height:34px;transition:box-shadow 70ms,transform 70ms,filter 70ms}
+button:hover{filter:brightness(.97)}button:active{transform:translateY(2px);box-shadow:inset 0 3px 6px #1b235052;filter:brightness(.92)}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,.settings-nav a:focus-visible,.settings-view :is(h2,h3):focus-visible{outline:2px solid #605be5;outline-offset:2px}
+.tab{white-space:nowrap;border-radius:8px 8px 0 0;border-bottom:0;padding-inline:var(--tab-inline-padding);font-variant-numeric:tabular-nums}
+.tab.current,.primary{color:white;background:linear-gradient(#504af0,#2523bf);border-color:#3830d9}
+.sample-tab{display:flex;position:relative}
+.sample-tab>.tab{padding-inline-end:28px}
+.tab-end{display:inline-block;min-inline-size:3ch;text-align:end}
+.close-tab{position:absolute;top:50%;inset-inline-end:4px;translate:0 -50%;width:22px;min-height:26px;padding:0;border:0;background:transparent;color:var(--blue);line-height:1;opacity:0;pointer-events:none}
+.close-tab span{font-size:18px}
+.sample-tab:is(:hover,:has(:focus-visible)) .close-tab{opacity:1;pointer-events:auto}
+.close-tab:hover{background:var(--shadow)}.tab.current+.close-tab{color:white}.tab.current+.close-tab:hover{background:#ffffff26}.tab.current+.close-tab:focus-visible{outline-color:white}
+.gear{margin:0 0 5px auto;padding:4px 8px;color:var(--blue);display:grid;place-items:center}.gear svg{width:19px;height:19px}
+.contact{margin:12px 20px 0;padding:8px 12px;display:grid;grid-template-columns:max-content minmax(180px,.6fr) minmax(220px,1.5fr);gap:16px;align-items:center;background:#f4f7ff;border:1px solid #c6cef0;border-radius:8px}
+.contact strong{color:var(--blue);padding:6px 9px;border-radius:5px;background:#e4e9fa;font-size:12px;letter-spacing:.055em}
+.inline,.visit{display:flex;gap:12px;align-items:center}.inline span,.visit span{white-space:nowrap;font-size:14px;line-height:20px;font-weight:650}.inline>:last-child{min-width:0;flex:1}
+.grid{padding:16px 20px;display:grid;grid-template-columns:minmax(0, .96fr) minmax(0,1.04fr);gap:24px}
+.column{min-width:0;display:grid;align-content:start;gap:12px}
+.field{display:grid;gap:4px;font-weight:650;min-width:0}.field span{display:block;font-size:14px;line-height:20px}
+.field-status{margin-inline-start:4px;color:var(--muted);font-size:12px;font-weight:500}
+input,select,textarea{width:100%;border:1px solid var(--line);border-radius:5px;min-height:36px;background:var(--surface);padding:6px 10px;font-weight:450;min-width:0}
+textarea{resize:vertical;min-height:64px}
+input::placeholder,textarea::placeholder{color:var(--muted);font-style:italic}
+.submission{font-size:clamp(19px,3.05vw,42px);line-height:1.15;font-weight:750;letter-spacing:.015em;color:var(--blue);background:#e3eafb;min-height:53px;padding:5px 11px;font-variant-numeric:tabular-nums}
+.visit{gap:12px}.visit input{width:80px}
+.results-head,.result-row{display:grid;grid-template-columns:32px minmax(0,1.55fr) minmax(0,1fr) 64px;align-items:center;gap:8px}
+.results{display:grid;gap:8px;margin-top:4px}
+.results-head{align-items:baseline}
+.results-head span{font-size:14px;line-height:20px;font-weight:700;padding-inline:6px 0}.results-head small{font-size:11px;color:var(--muted);font-weight:500;white-space:nowrap}
+#detected-substances-required{font-size:12px}
+.result-row b{padding:6px 3px;background:#dce7f8;text-align:center;border-radius:4px;color:#30319c;font-size:12px}
+.add{justify-self:start;color:var(--blue);margin-left:0;background:#edf3ff}.hint{color:var(--muted);font-size:12px;margin:0}
+.remove{justify-self:start;width:28px;min-height:28px;padding:0;color:var(--blue);font-size:18px;line-height:1}
+.right-top{display:grid;grid-template-columns:minmax(0,1fr) 150px;align-items:start;gap:12px 16px}
+.photo{grid-column:2;grid-row:1/span 2;border:1px dashed #8395c3;background:#e2e9f5;border-radius:8px;min-height:104px;align-self:stretch;color:#3e4b70;display:grid;place-items:center;align-content:center;text-align:center;gap:5px}
+.photo svg{width:37px;height:32px;color:#536387}.photo small{font-weight:500}
+.location{grid-column:1/-1}
+.strips h2{font-size:16px;line-height:22px;margin:0 0 8px;font-weight:730}.strip-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 16px}
+.conditional-field[hidden]{display:none}
+.conditional-field .hint{margin-inline-start:4px;font-weight:500}
+.sample-use{display:grid;gap:8px}
+.use-questions{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:8px 16px}
+.answer-group{min-width:0;margin:0;padding:0;border:0}
+.answer-group legend{margin:0 0 4px;padding:0;font-size:14px;line-height:20px;font-weight:650}
+.answer-options{display:flex;gap:6px}
+.answer-options button{min-width:52px;min-height:30px;padding:3px 10px;border-color:var(--line);border-radius:999px;font-size:14px}
+.answer-options button[aria-pressed="true"]{color:white;background:var(--blue);border-color:var(--blue)}
+footer{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 20px;border-top:1px solid #bfcdec;background:#ecf3fc}
+footer .inline{width:min(100%,520px)}.primary{min-width:170px;font-size:16px}
+.settings-header{padding:16px 20px 12px}.settings-header h2{margin:0;font-size:20px;line-height:1.25}
+.settings-view :is(h2,h3){width:fit-content}
+.settings-layout{display:grid;grid-template-columns:164px minmax(0,1fr);border-top:1px solid #bac9e8}
+.settings-nav{display:grid;align-content:start;gap:4px;padding:12px;border-right:1px solid #bac9e8;background:#ecf3fc}
+.settings-nav a{padding:7px 10px;border-radius:5px;color:var(--ink);text-decoration:none;font-size:14px;font-weight:650}
+.settings-nav a:hover,.settings-nav a[aria-current]{background:#e3eafb;color:var(--blue)}
+.settings-content{width:min(100%,704px);display:grid;gap:20px;padding:16px 24px 20px}
+.settings-section{display:grid;gap:12px;min-width:0}
+.settings-section+.settings-section{padding-top:16px;border-top:1px solid #bfcdec}
+.settings-section h3,.settings-code-group legend{margin:0;font-size:16px;line-height:22px;font-weight:730}
+.settings-section .field{max-width:360px}
+.settings-code-group{min-width:0;margin:0;padding:0;border:0}
+.settings-code-group legend{padding:0;font-size:14px}
+.settings-codes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:12px 16px;margin-top:8px;max-width:360px}
+.settings-code{display:grid;gap:4px}
+.settings-codes input{font-variant-numeric:tabular-nums}
+.settings-error{color:#912834;font-size:12px;margin:0}
+.settings-codes input[aria-invalid="true"]{border-color:#912834}
+.settings-folder-row{display:flex;align-items:end;flex-wrap:wrap;gap:8px 12px}
+.settings-folder-row .field{flex:1 1 220px}.settings-folder-row button{min-height:36px;white-space:nowrap}
+.settings-footer{justify-content:space-between;align-items:center;flex-direction:row;flex-wrap:wrap}
+.settings-actions{display:flex;justify-content:flex-end;gap:8px}
+.settings-actions .primary{min-width:104px}
+.folder-dialog{width:min(420px,calc(100% - 32px));padding:18px 20px;border:1px solid #9facd2;border-radius:12px;background:var(--surface);color:var(--ink);box-shadow:0 18px 48px #27365c24}
+.folder-dialog::backdrop{background:#18233e55}
+.folder-dialog form{display:grid;gap:12px}.folder-dialog h3{margin:0;font-size:16px;line-height:22px}
+@media(max-width:560px){.settings-layout{grid-template-columns:1fr}.settings-nav{display:flex;border-right:0;border-bottom:1px solid #bac9e8}.settings-content{padding-inline:16px}}
+option:disabled{color:#727887}
+@media(min-width:901px){
+  body{display:flex;flex-direction:column;height:100dvh}
+  .demo-note,.app{width:100%}
+  .demo-note,.titlebar,.reporting-view>.tabbar,.reporting-view>footer{flex:none}
+  .app,.reporting-view:not([hidden]){display:flex;flex-direction:column;min-height:0}
+  .app{margin-block:0}
+  .sample-panel,.settings-view{min-height:0;overflow:auto}
+  .strips{margin-top:8px}
+  footer{justify-content:flex-end}
+}
+@media(max-width:900px){body{padding:12px}.grid{gap:16px;padding-inline:16px}.contact{margin-inline:16px;gap:8px}.tabbar{padding-inline:16px}.right-top{grid-template-columns:minmax(0,1fr) 106px}.titlebar,footer{padding-inline:16px}}
+@media(max-width:690px){.grid{grid-template-columns:1fr}.contact{grid-template-columns:1fr}.contact strong{justify-self:start}.contact .inline{display:grid;grid-template-columns:116px minmax(0,1fr);gap:8px}.submission{font-size:clamp(19px,5.8vw,34px)}.column{gap:10px}footer{align-items:stretch;flex-direction:column}footer .inline{width:100%}.primary{width:100%}.tabbar{--tab-inline-padding:9px;padding-inline:10px}.gear{margin-left:0}.results-head span{padding-inline:4px}.results-head small{font-size:11px}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="demo-note"><strong>Interface demo</strong><span>Example data only · No files are saved, exported, or uploaded</span><span id="settings-storage-status" role="status" hidden>Settings are available for this session only.</span></div>
+<main class="app" aria-label="GYDT Sample Reporting prototype">
+<header class="titlebar"><span class="app-icon"><svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" aria-hidden="true" viewBox="0 0 120 120"><g transform="translate(0 0) scale(1.0)"><rect x="2" y="2" width="116" height="116" rx="25" fill="#292064"/><ellipse cx="60" cy="60" rx="16" ry="42" transform="rotate(0 60 60)" fill="none" stroke="#B7A4FF" stroke-width="4"/><ellipse cx="60" cy="60" rx="16" ry="42" transform="rotate(60 60 60)" fill="none" stroke="#B7A4FF" stroke-width="4"/><ellipse cx="60" cy="60" rx="16" ry="42" transform="rotate(-60 60 60)" fill="none" stroke="#B7A4FF" stroke-width="4"/><g transform="translate(60 60) scale(1.0) translate(-60 -60)"><circle cx="60" cy="60" r="19" fill="#F5EEFF" stroke="#292064" stroke-width="2.8"/><circle cx="54" cy="55" r="2.3" fill="#292064" stroke="none" stroke-width="0"/><circle cx="66" cy="55" r="2.3" fill="#292064" stroke="none" stroke-width="0"/><path d="M50 63Q60 75 70 63" fill="none" stroke="#292064" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"/></g></g></svg></span><h1>GYDT Sample Reporting</h1></header>
+<div class="reporting-view">
+<div class="tabbar" role="group" aria-label="Sample tabs">
+<div class="sample-tab">
+<button type="button" class="tab current" aria-current="true"><span class="tab-label">Sample </span><span class="tab-end">001</span></button>
+<button type="button" class="close-tab" aria-label="Close Sample 001"><span aria-hidden="true">×</span></button>
+</div>
+<button type="button" class="tab new-sample" aria-label="New sample">＋</button>
+<button type="button" class="gear" aria-label="Settings" aria-controls="settings-view" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 4h6l.8 2.2 2.2.9 2.1-.7 2.1 3.6-1.7 1.5v2l1.7 1.5-2.1 3.6-2.1-.7-2.2.9L15 21H9l-.8-2.2-2.2-.9-2.1.7-2.1-3.6 1.7-1.5v-2L1.8 10l2.1-3.6 2.1.7 2.2-.9z"/><circle cx="12" cy="12.5" r="3.4"/></svg></button>
+</div>
+<div class="sample-panel">
+<section class="contact" aria-label="Client contact"><strong>CLIENT CONTACT</strong>
+<label class="inline"><span>Contact method</span><select><option value="" aria-label="No contact"></option><option>Email</option><option>Phone</option></select></label>
+<label class="inline"><span>Email or phone <small class="field-status">(optional)</small></span><input type="text" autocomplete="off"></label>
+</section>
+<div class="grid">
+<section class="column" aria-label="Submission and sample details">
+<label class="field"><span>Submission number <small class="field-status" aria-hidden="true">(required)</small></span><input class="submission" value="3-901-2025-06-16-001" spellcheck="false" autocomplete="off" required></label>
+<label class="visit"><span>Visit number <small class="field-status" aria-hidden="true">(required)</small></span><input inputmode="numeric" value="1" autocomplete="off" required></label>
+<label class="field"><span>Expected substance <small class="field-status" aria-hidden="true">(required)</small></span><select class="expected-substance" required><option value=""></option></select></label>
+<label class="field"><span>Sample texture <small class="field-status" aria-hidden="true">(required)</small></span>
+<select class="sample-texture" aria-controls="pill-type-field texture-details-field" required>
+<option value="" aria-label="No texture selected"></option>
+<option>Blotter</option>
+<option>Capsule</option>
+<option>Chunk</option>
+<option>Crystal</option>
+<option>Flake</option>
+<option>Granules</option>
+<option>Liquid</option>
+<option>Organic</option>
+<option>Paste</option>
+<option>Pebble</option>
+<option>Powder</option>
+<option>Pressed Pill</option>
+<option>Residue</option>
+<option>Tablet</option>
+<option value="other">Other (please specify)</option>
+</select></label>
+<label class="field conditional-field" id="pill-type-field" hidden><span>Shape <small class="field-status">(optional)</small></span>
+<select class="sample-shape" aria-controls="shape-details-field">
+<option value="" aria-label="No shape selected"></option>
+<option value="round">Round</option>
+<option value="rectangle">Rectangle</option>
+<option value="capsule">Capsule</option>
+<option value="teardrop">Tear Drop</option>
+<option value="oval">Oval</option>
+<option value="barrel">Barrel</option>
+<option value="cup">Cup</option>
+<option value="heart">Heart</option>
+<option value="star">Star</option>
+<option value="3-sided">3-Sided</option>
+<option value="4-sided">4-Sided</option>
+<option value="5-sided">5-Sided</option>
+<option value="6-sided">6-Sided</option>
+<option value="7-sided">7-Sided</option>
+<option value="8-sided">8-Sided</option>
+<option value="figure8">Figure 8</option>
+<option value="character">Character</option>
+<option value="unique">Unique</option>
+<option value="other">Other</option>
+</select></label>
+<label class="field conditional-field" id="shape-details-field" hidden><span>Shape details</span><input type="text" autocomplete="off"></label>
+<label class="field conditional-field" id="texture-details-field" hidden><span>Texture details</span><input type="text" autocomplete="off"></label>
+<label class="field"><span>Sample colour <small class="field-status" aria-hidden="true">(required)</small></span><select required><option value="" aria-label="No colour selected"></option><option>White</option><option>Beige</option><option>Yellow</option><option>Pink</option><option>Other</option></select></label>
+<div class="results" role="group" aria-label="Detected substances" aria-describedby="detected-substances-required">
+<div class="results-head"><span></span><span>Detected substances <small id="detected-substances-required">At least one required</small></span><span>Percentage <small>(optional)</small></span></div>
+<div class="result-row">
+<b>01</b>
+<select aria-label="Detected substance 1"><option value=""></option><option>MDMA</option><option>Caffeine</option><option>Mannitol</option><option>Ketamine</option><option>Unknown</option><option>Other</option></select>
+<select aria-label="Percentage 1"><option value=""></option><option>10–15%</option><option>25–30%</option><option>50–55%</option><option>75–80%</option><option>95–100%</option></select>
+<button class="remove" type="button" aria-label="Remove substance"><span aria-hidden="true">×</span></button>
+</div>
+<button class="add" type="button">＋ Add substance</button><p class="hint">Exports in the order shown.</p>
+</div>
+</section>
+<section class="column" aria-label="Collection and testing">
+<div class="right-top">
+<label class="field"><span>Code word</span><input value="MAPLE" autocomplete="off"></label>
+<button type="button" class="photo" aria-label="Sample photo, no image"><svg viewBox="0 0 32 28" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="25" rx="3"/><circle cx="22.5" cy="8" r="2.7"/><path d="m2 22 8-8 5.2 5.4 4.3-3.5 10.5 8.2"/></svg><span>Sample photo<br><small>(no image)</small></span></button>
+<label class="field"><span>Collection date <small class="field-status" aria-hidden="true">(required)</small></span><input type="date" value="2025-06-16" required></label>
+<label class="field location"><span>Collection location <small class="field-status" aria-hidden="true">(required)</small></span><select class="collection-location" required><option>Example East</option><option>Example West</option></select></label>
+</div>
+<div class="strips"><h2>Test strip results</h2><div class="strip-grid">
+<label class="field"><span>Fentanyl</span><select><option value="" aria-label="Not Used"></option><option>Positive</option><option>Negative</option><option>Invalid</option></select></label>
+<label class="field"><span>Benzodiazepines</span><select><option value="" aria-label="Not Used"></option><option>Positive</option><option>Negative</option><option>Invalid</option></select></label>
+<label class="field"><span>Medetomidine</span><select><option value="" aria-label="Not Used"></option><option>Positive</option><option>Negative</option><option>Invalid</option></select></label>
+<label class="field"><span>Lysergamide (LSD)</span><select><option value="" aria-label="Not Used"></option><option>Positive</option><option>Negative</option><option>Invalid</option></select></label>
+</div></div>
+<div class="sample-use">
+<div class="use-questions">
+<fieldset class="answer-group" data-answer="na" aria-describedby="clear-answer-hint">
+<legend>Has this sample been used?</legend>
+<div class="answer-options">
+<button type="button" data-choice="yes" aria-pressed="false">Yes</button>
+<button type="button" data-choice="no" aria-pressed="false">No</button>
+</div>
+</fieldset>
+<fieldset class="answer-group unexpected-effects" data-answer="na" aria-describedby="clear-answer-hint">
+<legend>Unexpected effects?</legend>
+<div class="answer-options">
+<button type="button" data-choice="yes" aria-pressed="false" aria-controls="effect-description">Yes</button>
+<button type="button" data-choice="no" aria-pressed="false" aria-controls="effect-description">No</button>
+</div>
+</fieldset>
+</div>
+<p class="hint" id="clear-answer-hint">Select the same answer again to clear it.</p>
+<label class="field conditional-field" id="effect-description" hidden><span>Describe the unexpected effects</span><textarea></textarea></label>
+</div>
+<label class="field"><span>Sample notes <small class="field-status">(optional)</small></span><textarea></textarea></label>
+</section>
+</div>
+</div>
+<footer>
+<label class="inline"><span>Export format</span><select><option>Synthetic WordPress fixture</option><option disabled>BCCSCU (In Development)</option></select></label>
+<button type="button" class="primary">Export</button>
+</footer>
+</div>
+<section class="settings-view" id="settings-view" aria-labelledby="settings-heading" hidden>
+<header class="settings-header"><h2 id="settings-heading" tabindex="-1">Settings</h2></header>
+<form id="settings-form" novalidate autocomplete="off">
+<div class="settings-layout">
+<nav class="settings-nav" aria-label="Settings sections">
+<a href="#settings-location" aria-current="location">Location</a>
+<a href="#settings-export">Export</a>
+</nav>
+<div class="settings-content">
+<section class="settings-section" aria-labelledby="settings-location">
+<h3 id="settings-location" tabindex="-1">Location</h3>
+<label class="field"><span>Default collection location</span><select id="settings-default-location"><option>Example East</option><option>Example West</option></select></label>
+<fieldset class="settings-code-group">
+<legend>Submission codes</legend>
+<p class="hint" id="settings-code-hint">Enter three digits for each location.</p>
+<div class="settings-codes">
+<div class="settings-code"><label class="field"><span>Example East</span><input type="text" inputmode="numeric" data-location-code="Example East" aria-describedby="settings-code-hint east-hastings-code-error"></label><p class="settings-error" id="east-hastings-code-error" hidden>Enter exactly three digits.</p></div>
+<div class="settings-code"><label class="field"><span>Example West</span><input type="text" inputmode="numeric" data-location-code="Example West" aria-describedby="settings-code-hint west-fixture-code-error"></label><p class="settings-error" id="west-fixture-code-error" hidden>Enter exactly three digits.</p></div>
+</div>
+</fieldset>
+</section>
+<section class="settings-section" aria-labelledby="settings-export">
+<h3 id="settings-export" tabindex="-1">Export</h3>
+<div class="settings-folder-row">
+<label class="field"><span>Default export folder</span><input id="settings-export-folder" type="text" value="/Demo/GYDT Exports" readonly></label>
+<button type="button" id="choose-folder" aria-haspopup="dialog">Choose folder…</button>
+</div>
+</section>
+</div>
+</div>
+<footer class="settings-footer">
+<p class="hint">Version <span id="settings-version"></span></p>
+<div class="settings-actions"><button type="button" id="cancel-settings">Cancel</button><button type="submit" class="primary">Save</button></div>
+</footer>
+</form>
+<dialog class="folder-dialog" id="folder-dialog" aria-labelledby="folder-heading">
+<form method="dialog" autocomplete="off">
+<h3 id="folder-heading">Choose folder</h3>
+<label class="field"><span>Demo folder path</span><input id="folder-path" type="text" required autofocus></label>
+<div class="settings-actions"><button value="cancel" formnovalidate>Cancel</button><button class="primary" value="choose">Use folder</button></div>
+</form>
+</dialog>
+</section>
+</main>
+<script>
+(() => {
+  const app = document.querySelector('.app');
+  const firstSample = {
+    group: app.querySelector('.sample-tab'),
+    tab: app.querySelector('.tab.current'),
+    panel: app.querySelector('.sample-panel')
+  };
+  const substanceOptions = firstSample.panel.querySelector('.result-row select').options;
+  firstSample.panel.querySelector('.expected-substance').replaceChildren(
+    ...Array.from(substanceOptions, option => option.cloneNode(true))
+  );
+  const tabTemplate = firstSample.group.cloneNode(true);
+  const sampleTemplate = firstSample.panel.cloneNode(true);
+  const rowTemplate = sampleTemplate.querySelector('.result-row');
+  const newSample = app.querySelector('.new-sample');
+  const demoSubmission = sampleTemplate.querySelector('.submission').defaultValue;
+  const [demoCity, demoCode, year, month, day, firstSuffix] = demoSubmission.split('-');
+  const getSettings = setupSettings();
+  const samples = [];
+  let activeSample = firstSample;
+  let nextSample = 2;
+  let lastVisitNumber = '';
+
+  function setupSettings() {
+    const demoVersion = '1.0.0';
+    const storageKey = 'gydt-sample-reporting-demo.settings';
+    const reporting = app.querySelector('.reporting-view');
+    const gear = reporting.querySelector('.gear');
+    const pane = document.getElementById('settings-view');
+    const form = document.getElementById('settings-form');
+    const defaultLocation = document.getElementById('settings-default-location');
+    const codeFields = [...form.querySelectorAll('[data-location-code]')];
+    const folder = document.getElementById('settings-export-folder');
+    const chooseFolder = document.getElementById('choose-folder');
+    const folderDialog = document.getElementById('folder-dialog');
+    const folderPath = document.getElementById('folder-path');
+    const storageStatus = document.getElementById('settings-storage-status');
+    const links = [...form.querySelectorAll('.settings-nav a')];
+    const validCode = value => typeof value === 'string' && /^[0-9]{3}$/.test(value);
+    const defaults = {
+      location: defaultLocation.value,
+      codes: Object.fromEntries(codeFields.map(field => [field.dataset.locationCode, demoCode])),
+      exportFolder: folder.defaultValue
+    };
+    let saved = loadSettings();
+    document.getElementById('settings-version').textContent = demoVersion;
+
+    function loadSettings() {
+      let serialized;
+      try {
+        serialized = window.localStorage.getItem(storageKey);
+      } catch {
+        storageStatus.hidden = false;
+        return defaults;
+      }
+
+      try {
+        const stored = JSON.parse(serialized);
+        if (codeFields.some(field => field.dataset.locationCode === stored?.location) &&
+            codeFields.every(field => validCode(stored.codes?.[field.dataset.locationCode])) &&
+            typeof stored.exportFolder === 'string') {
+          return stored;
+        }
+      } catch {
+        // An unreadable record falls back to the demo defaults.
+      }
+      return defaults;
+    }
+
+    function setCodeError(field, invalid) {
+      if (invalid) field.setAttribute('aria-invalid', 'true');
+      else field.removeAttribute('aria-invalid');
+      field.closest('.settings-code').querySelector('.settings-error').hidden = !invalid;
+    }
+
+    function markSection(current) {
+      for (const link of links) {
+        if (link === current) link.setAttribute('aria-current', 'location');
+        else link.removeAttribute('aria-current');
+      }
+    }
+
+    function closeSettings() {
+      pane.hidden = true;
+      reporting.hidden = false;
+      gear.setAttribute('aria-expanded', 'false');
+      gear.focus();
+    }
+
+    gear.addEventListener('click', () => {
+      defaultLocation.value = saved.location;
+      folder.value = saved.exportFolder;
+      for (const field of codeFields) {
+        field.value = saved.codes[field.dataset.locationCode];
+        setCodeError(field, false);
+      }
+      markSection(links[0]);
+      reporting.hidden = true;
+      pane.hidden = false;
+      gear.setAttribute('aria-expanded', 'true');
+      document.getElementById('settings-heading').focus();
+    });
+
+    for (const link of links) {
+      link.addEventListener('click', event => {
+        event.preventDefault();
+        markSection(link);
+        const heading = document.getElementById(link.hash.slice(1));
+        heading.focus({preventScroll: true});
+        heading.scrollIntoView({block: 'start'});
+      });
+    }
+
+    chooseFolder.addEventListener('click', () => {
+      folderPath.value = folder.value;
+      folderDialog.returnValue = '';
+      folderDialog.showModal();
+    });
+    folderDialog.addEventListener('close', () => {
+      if (folderDialog.returnValue === 'choose') folder.value = folderPath.value;
+      chooseFolder.focus();
+    });
+
+    for (const field of codeFields) {
+      field.addEventListener('input', () => {
+        if (field.hasAttribute('aria-invalid')) setCodeError(field, !validCode(field.value));
+      });
+    }
+
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      const invalidFields = codeFields.filter(field => {
+        const invalid = !validCode(field.value);
+        setCodeError(field, invalid);
+        return invalid;
+      });
+      if (invalidFields.length) {
+        invalidFields[0].focus();
+        return;
+      }
+
+      saved = {
+        location: defaultLocation.value,
+        codes: Object.fromEntries(codeFields.map(field => [field.dataset.locationCode, field.value])),
+        exportFolder: folder.value
+      };
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(saved));
+        storageStatus.hidden = true;
+      } catch {
+        storageStatus.hidden = false;
+      }
+      closeSettings();
+    });
+    document.getElementById('cancel-settings').addEventListener('click', closeSettings);
+    pane.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && !folderDialog.open) {
+        event.preventDefault();
+        closeSettings();
+      }
+    });
+
+    return () => saved;
+  }
+
+  function prefillSampleLocation(panel, suffix) {
+    const {location, codes} = getSettings();
+    panel.querySelector('.collection-location').value = location;
+    const submission = panel.querySelector('.submission');
+    const number = [demoCity, codes[location], year, month, day, suffix].join('-');
+    submission.defaultValue = number;
+    submission.value = number;
+  }
+
+  function showSample(sample) {
+    if (sample === activeSample) return;
+    activeSample.tab.classList.remove('current');
+    activeSample.tab.removeAttribute('aria-current');
+    activeSample.panel.replaceWith(sample.panel);
+    sample.tab.classList.add('current');
+    sample.tab.setAttribute('aria-current', 'true');
+    activeSample = sample;
+  }
+
+  app.addEventListener('input', event => {
+    if (!event.target.matches('.visit input')) return;
+    const visitNumber = event.target.value.trim();
+    if (visitNumber) lastVisitNumber = visitNumber;
+  });
+
+  app.addEventListener('change', event => {
+    if (!event.target.matches('.sample-texture, .sample-shape')) return;
+
+    const panel = event.target.closest('.sample-panel');
+    const texture = panel.querySelector('.sample-texture').value;
+    const shape = panel.querySelector('.sample-shape');
+    const shapeField = panel.querySelector('#pill-type-field');
+    const shapeDetails = panel.querySelector('#shape-details-field');
+    const textureDetails = panel.querySelector('#texture-details-field');
+
+    shapeField.hidden = texture !== 'Pressed Pill' && texture !== 'Tablet';
+    if (shapeField.hidden) shape.value = '';
+
+    shapeDetails.hidden = shapeField.hidden || shape.value !== 'other';
+    if (shapeDetails.hidden) shapeDetails.querySelector('input').value = '';
+
+    textureDetails.hidden = texture !== 'other';
+    if (textureDetails.hidden) textureDetails.querySelector('input').value = '';
+  });
+
+  app.addEventListener('click', event => {
+    const choice = event.target.closest('button[data-choice]');
+    if (!choice) return;
+
+    const group = choice.closest('.answer-group');
+    const value = choice.dataset.choice;
+    const answer = group.dataset.answer === value ? 'na' : value;
+    group.dataset.answer = answer;
+    for (const button of group.querySelectorAll('button[data-choice]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.choice === answer));
+    }
+    if (group.classList.contains('unexpected-effects')) {
+      document.getElementById('effect-description').hidden = answer !== 'yes';
+    }
+  });
+
+  function registerSample(sample) {
+    samples.push(sample);
+    const submission = sample.panel.querySelector('.submission');
+    const collectionLocation = sample.panel.querySelector('.collection-location');
+    const tabLabel = sample.tab.querySelector('.tab-label');
+    const tabEnd = sample.tab.querySelector('.tab-end');
+    const closeTab = sample.group.querySelector('.close-tab');
+    let previousLocation = collectionLocation.value;
+    let submissionEdited = false;
+    const updateTabLabel = () => {
+      const number = submission.value.trim();
+      const standard = /^\d-\d{3}-\d{4}-\d{2}-\d{2}-(\d{3})$/.exec(number);
+      const label = standard ? `Sample ${standard[1]}` : (number || 'Sample');
+      const characters = Array.from(label);
+      tabLabel.textContent = characters.slice(0, -3).join('');
+      tabEnd.textContent = characters.slice(-3).join('');
+      sample.tab.setAttribute('aria-label', label);
+      closeTab.setAttribute('aria-label', `Close ${label}`);
+    };
+    updateTabLabel();
+    submission.addEventListener('input', () => {
+      if (submission.value !== submission.defaultValue) submissionEdited = true;
+      updateTabLabel();
+    });
+    collectionLocation.addEventListener('change', () => {
+      const {codes} = getSettings();
+      const previousCode = codes[previousLocation];
+      const code = codes[collectionLocation.value];
+      previousLocation = collectionLocation.value;
+      if (!code || code === previousCode || submissionEdited || submission.value !== submission.defaultValue) return;
+
+      const parts = submission.value.split('-');
+      parts[1] = code;
+      submission.defaultValue = parts.join('-');
+      submission.value = submission.defaultValue;
+      updateTabLabel();
+    });
+    sample.tab.addEventListener('click', () => showSample(sample));
+    closeTab.addEventListener('click', () => closeSample(sample));
+  }
+
+  function openSample() {
+    if (nextSample > 999) {
+      window.alert('All 999 submission numbers have been assigned in this demo session. Reload to start a new session.');
+      return false;
+    }
+
+    const panel = sampleTemplate.cloneNode(true);
+    for (const field of panel.querySelectorAll('input, textarea')) {
+      field.value = '';
+    }
+    for (const select of panel.querySelectorAll('select:not(.collection-location)')) {
+      if (select.options[0].value !== '') select.prepend(new Option('', ''));
+      select.value = '';
+    }
+    const sampleNumber = nextSample++;
+    prefillSampleLocation(panel, String(sampleNumber).padStart(3, '0'));
+    panel.querySelector('.visit input').placeholder = lastVisitNumber;
+
+    const group = tabTemplate.cloneNode(true);
+    const tab = group.querySelector('.tab');
+    tab.classList.remove('current');
+    tab.removeAttribute('aria-current');
+    const sample = { group, tab, panel };
+    registerSample(sample);
+    newSample.before(group);
+    showSample(sample);
+    tab.focus();
+    return true;
+  }
+
+  function closeSample(sample) {
+    if (samples.length === 1 && !openSample()) return;
+
+    const index = samples.indexOf(sample);
+    samples.splice(index, 1);
+    sample.group.remove();
+
+    const nearest = samples[index] ?? samples[index - 1];
+    if (sample === activeSample) showSample(nearest);
+    nearest.tab.focus();
+  }
+
+  prefillSampleLocation(firstSample.panel, firstSuffix);
+  registerSample(firstSample);
+  newSample.addEventListener('click', openSample);
+
+  function renumberRows(results) {
+    results.querySelectorAll('.result-row').forEach((row, index) => {
+      const number = index + 1;
+      const [substance, percentage] = row.querySelectorAll('select');
+      row.querySelector('b').textContent = String(number).padStart(2, '0');
+      substance.setAttribute('aria-label', `Detected substance ${number}`);
+      percentage.setAttribute('aria-label', `Percentage ${number}`);
+    });
+  }
+
+  function addRow(results) {
+    const row = rowTemplate.cloneNode(true);
+    results.querySelector('.add').before(row);
+    renumberRows(results);
+    row.querySelector('select').focus();
+  }
+
+  app.addEventListener('click', event => {
+    const button = event.target.closest('button.add, button.remove');
+    if (!button) return;
+    const results = button.closest('.results');
+    if (button.classList.contains('add')) {
+      addRow(results);
+      return;
+    }
+
+    const row = button.closest('.result-row');
+    const nextSubstance = row.nextElementSibling?.querySelector('select') ??
+      row.previousElementSibling?.querySelector('select');
+    row.remove();
+    if (nextSubstance) {
+      renumberRows(results);
+      nextSubstance.focus();
+    } else {
+      addRow(results);
+    }
+  });
+})();
+</script>
+</body>
+</html>

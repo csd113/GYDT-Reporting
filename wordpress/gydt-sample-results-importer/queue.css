@@ -1,0 +1,156 @@
+#gydt-zip-drop {
+    max-width: 32rem;
+    border: 2px dashed #646970;
+    border-radius: 4px;
+    padding: 1.25rem;
+    text-align: center;
+}
+
+#gydt-zip-drop.is-dragging {
+    border-color: #2271b1;
+    border-style: solid;
+    background: #f0f6fc;
+}
+
+#gydt-zip-drop[aria-disabled="true"] {
+    opacity: 0.75;
+}
+
+#gydt-queue-items,
+#gydt-history-items {
+    max-width: 52rem;
+    margin: 0;
+}
+
+.gydt-queue-row {
+    margin: 0 0 0.375rem;
+    padding: 0.625rem 0.75rem;
+    border: 1px solid #dcdcde;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.gydt-row-summary {
+    display: grid;
+    grid-template-columns: 1.5rem minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 0.625rem;
+}
+
+.gydt-row-icon {
+    display: grid;
+    place-items: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    background: #f0f0f1;
+    color: #50575e;
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.gydt-queue-row[data-state="imported"] .gydt-row-icon {
+    background: #edfaef;
+    color: #006b1b;
+}
+
+.gydt-queue-row[data-state="failed"] .gydt-row-icon,
+.gydt-queue-row[data-state="timeout"] .gydt-row-icon {
+    background: #fcf0f1;
+    color: #b32d2e;
+}
+
+.gydt-queue-row[data-state="conflict"] .gydt-row-icon {
+    background: #fcf9e8;
+    color: #674900;
+}
+
+.gydt-queue-row[data-state="uploading"] .gydt-row-icon,
+.gydt-queue-row[data-state="processing"] .gydt-row-icon {
+    background: #f0f6fc;
+    color: #135e96;
+}
+
+.gydt-row-file {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.gydt-row-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 0.625rem;
+}
+
+.gydt-row-number {
+    font-size: 1.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.gydt-row-context {
+    color: #50575e;
+    overflow-wrap: anywhere;
+}
+
+.gydt-row-label {
+    font-weight: 600;
+}
+
+.gydt-row-detail {
+    color: #50575e;
+}
+
+.gydt-row-detail:not(:empty) {
+    margin-inline-start: 0.375rem;
+}
+
+.gydt-row-actions button {
+    margin-inline-start: 0.375rem;
+}
+
+.gydt-row-progress:not([hidden]) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 4ch;
+    align-items: center;
+    gap: 0.5rem;
+    margin-block-start: 0.375rem;
+    margin-inline-start: 2.125rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.gydt-row-progress progress {
+    width: 100%;
+    height: 0.75rem;
+    accent-color: #2271b1;
+}
+
+.gydt-row-progress > span {
+    text-align: end;
+}
+
+#gydt-history {
+    margin-block-start: 2rem;
+}
+
+.gydt-history-controls,
+.gydt-history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.375rem;
+}
+
+.gydt-history-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(7rem, auto) auto;
+    align-items: center;
+    gap: 0.625rem;
+}
+
+.gydt-history-status {
+    font-weight: 600;
+}
+
+.wp-core-ui .button.gydt-hide-upload {
+    font-size: 1rem;
+}

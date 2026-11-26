@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:wp="http://wordpress.org/export/1.2/" version="2.0">
+  <channel>
+    <title>Synthetic sample reporting catalogue</title>
+    <wp:wxr_version>1.2</wp:wxr_version>
+    <item>
+      <title>Synthetic compound A</title>
+      <wp:post_id>910001</wp:post_id>
+      <wp:post_name>fixture-a</wp:post_name>
+      <wp:post_type>substances</wp:post_type>
+      <category domain="substance-category" nicename="fixture">Synthetic category</category>
+    </item>
+    <item>
+      <title>Synthetic compound B</title>
+      <wp:post_id>910002</wp:post_id>
+      <wp:post_name>fixture-b-first</wp:post_name>
+      <wp:post_type>substances</wp:post_type>
+      <category domain="substance-category" nicename="fixture">Synthetic category</category>
+    </item>
+    <item>
+      <title>Synthetic compound B</title>
+      <wp:post_id>910003</wp:post_id>
+      <wp:post_name>fixture-b-second</wp:post_name>
+      <wp:post_type>substances</wp:post_type>
+    </item>
+  </channel>
+</rss>
