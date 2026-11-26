@@ -4,6 +4,9 @@ version = "1.0.0"
 edition = "2024"
 rust-version = "1.100.0"
 
+[features]
+public-demo = []
+
 [dependencies]
 base64 = "0.22.1"
 gamut-core = "2.0.1"

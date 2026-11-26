@@ -12,3 +12,8 @@ successful import creates a draft with a native Featured Image. Review, editing,
 publication, withdrawal and deletion use the ordinary editor and Media Library.
 As with a hand-entered fixture, the original may be accessible by its direct
 media URL even if the Result is not published.
+
+The public synthetic importer is licensed under the GNU General Public
+License, version 2 or later. The ZIP includes the [full license text](gydt-sample-results-importer/LICENSE.txt).
+This license applies only to this importer, not to the desktop app or any
+staff or production files.

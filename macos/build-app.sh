@@ -29,7 +29,7 @@ cd "$(dirname "$0")/.."
 target=aarch64-apple-darwin
 minimum_macos=11.0
 executable=gydt-results-compiler
-app_name='GYDT Sample Reporting'
+app_name='GYDT Sample Reporting Demo'
 bundle="$app_name.app"
 contents="$bundle/Contents"
 plist="$contents/Info.plist"
@@ -63,7 +63,7 @@ GYDT_BUNDLE_RUSTC_WRAPPER="${RUSTC_WRAPPER-${CARGO_BUILD_RUSTC_WRAPPER-}}" \
 RUSTC_WRAPPER="$remap_wrapper" \
 CARGO_BUILD_BUILD_DIR="$target_dir" \
 MACOSX_DEPLOYMENT_TARGET="$minimum_macos" \
-    cargo build --release --locked --target "$target" --bin "$executable" --target-dir "$target_dir"
+    cargo build --release --locked --no-default-features --features public-demo --target "$target" --bin "$executable" --target-dir "$target_dir"
 built_binary="$target_dir/$target/release/$executable"
 if LC_ALL=C grep -aqF -e "$HOME" -e "$cargo_home/registry/" -- "$built_binary"; then
     fail 'The executable still contains a builder home or Cargo registry path.'
@@ -101,9 +101,9 @@ cat > "$plist" <<EOF
     <key>CFBundleDisplayName</key><string>$app_name</string>
     <key>CFBundleExecutable</key><string>$executable</string>
     <key>CFBundleIconFile</key><string>AppIcon.icns</string>
-    <key>CFBundleIdentifier</key><string>com.getyourdrugstested.sample-reporting</string>
+    <key>CFBundleIdentifier</key><string>com.getyourdrugstested.sample-reporting.demo</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>GYDT Reporting</string>
+    <key>CFBundleName</key><string>GYDT Reporting Demo</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$bundle_version</string>
     <key>CFBundleVersion</key><string>$bundle_version</string>

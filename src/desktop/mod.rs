@@ -25,7 +25,11 @@ use self::{
     store::{Book, Record, Sequence, Settings, Store},
 };
 
-const APP_NAME: &str = "GYDT Sample Reporting";
+pub(super) const APP_NAME: &str = if cfg!(feature = "public-demo") {
+    "GYDT Sample Reporting Demo"
+} else {
+    "GYDT Sample Reporting"
+};
 #[cfg(target_os = "macos")]
 const REPORTING_SIZE: [f32; 2] = [1136.0, 823.0];
 #[cfg(target_os = "macos")]

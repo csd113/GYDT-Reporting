@@ -6,9 +6,9 @@ mod desktop;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 fn main() {
     if let Err(error) = desktop::run() {
-        eprintln!("GYDT Sample Reporting: {error}");
+        eprintln!("{}: {error}", desktop::APP_NAME);
         rfd::MessageDialog::new()
-            .set_title("GYDT Sample Reporting")
+            .set_title(desktop::APP_NAME)
             .set_level(rfd::MessageLevel::Error)
             .set_description(error.to_string())
             .show();

@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write as _},
     path::{Path, PathBuf},
@@ -185,19 +186,35 @@ pub(super) struct Store {
 
 impl Store {
     pub(super) fn open() -> Result<Self> {
-        let root = if let Some(path) = std::env::var_os("GYDT_DATA_DIR") {
+        let root = Self::configured_root(
+            || std::env::var_os("GYDT_DATA_DIR"),
+            || directories::BaseDirs::new().map(|dirs| dirs.data_local_dir().to_owned()),
+        )?;
+        Self::open_at(root)
+    }
+
+    fn configured_root(
+        staff_override: impl FnOnce() -> Option<OsString>,
+        base_directory: impl FnOnce() -> Option<PathBuf>,
+    ) -> Result<PathBuf> {
+        if !cfg!(feature = "public-demo")
+            && let Some(path) = staff_override()
+        {
             let path = PathBuf::from(path);
             if !path.is_absolute() {
                 return Err("GYDT_DATA_DIR must be an absolute path.".into());
             }
-            path
+            return Ok(path);
+        }
+
+        let namespace = if cfg!(feature = "public-demo") {
+            "GYDT Sample Reporting Demo"
         } else {
-            directories::BaseDirs::new()
-                .ok_or("Can't locate the local application data folder.")?
-                .data_local_dir()
-                .join("GYDT Sample Reporting")
+            "GYDT Sample Reporting"
         };
-        Self::open_at(root)
+        Ok(base_directory()
+            .ok_or("Can't locate the local application data folder.")?
+            .join(namespace))
     }
 
     pub(super) fn open_at(root: PathBuf) -> Result<Self> {
@@ -422,4 +439,67 @@ fn split_title(title: &str) -> Option<(&str, u64)> {
     }
     let value: u64 = serial.parse().ok()?;
     (value > 0).then(|| (title.get(..=prefix.len()).unwrap_or_default(), value))
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+
+    #[cfg(feature = "public-demo")]
+    #[test]
+    fn demo_ignores_staff_override_and_opens_a_separate_store() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path().join("app-data");
+        let default_staff = base.join("GYDT Sample Reporting");
+        let inherited_staff = tmp.path().join("explicit-staff-data");
+        let sentinel = b"malformed synthetic staff book";
+        for staff in [&default_staff, &inherited_staff] {
+            fs::create_dir_all(staff)?;
+            fs::write(staff.join("book.json"), sentinel)?;
+        }
+
+        for staff_override in [None, Some(inherited_staff.into_os_string())] {
+            let consulted = std::cell::Cell::new(false);
+            let root = Store::configured_root(
+                || {
+                    consulted.set(true);
+                    staff_override
+                },
+                || Some(base.clone()),
+            )?;
+            assert!(!consulted.get());
+            assert_eq!(root, base.join("GYDT Sample Reporting Demo"));
+            let store = Store::open_at(root)?;
+            let book = store.book()?;
+            assert!(store.records()?.is_empty());
+            store.save_book(&book)?;
+        }
+
+        for staff in [default_staff, tmp.path().join("explicit-staff-data")] {
+            assert_eq!(fs::read(staff.join("book.json"))?, sentinel);
+            assert_eq!(fs::read_dir(staff)?.count(), 1);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "public-demo"))]
+    #[test]
+    fn ordinary_build_preserves_staff_override_and_default() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path().join("app-data");
+        let staff = tmp.path().join("staff");
+        assert_eq!(
+            Store::configured_root(|| Some(staff.clone().into_os_string()), || None)?,
+            staff
+        );
+        assert!(
+            Store::configured_root(|| Some(OsString::from("relative")), || Some(base.clone()),)
+                .is_err()
+        );
+        assert_eq!(
+            Store::configured_root(|| None, || Some(base.clone()))?,
+            base.join("GYDT Sample Reporting")
+        );
+        Ok(())
+    }
 }

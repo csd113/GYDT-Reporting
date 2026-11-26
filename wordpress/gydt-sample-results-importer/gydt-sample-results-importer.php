@@ -4,6 +4,8 @@
  * Description: Synthetic fixture importer for disposable local testing only.
  * Version: 0.1.1-fixture.1
  * Requires PHP: 8.1
+ * License: GPL-2.0-or-later
+ * License URI: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
  */
 
 namespace GYDT\SampleResults;

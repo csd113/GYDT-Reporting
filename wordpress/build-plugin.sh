@@ -22,7 +22,9 @@ trap 'rm -rf "$stage"' EXIT
 plugin=gydt-sample-results-importer
 mkdir "$stage/$plugin"
 set --
-for name in acf-contract.php contract.php gydt-sample-results-importer.php import-history.php import.php pilot.php queue.css queue.js submission-lock.php zip.php; do
+for name in LICENSE.txt THIRD-PARTY-NOTICES.txt acf-contract.php contract.php \
+    gydt-sample-results-importer.php import-history.php import.php pilot.php \
+    queue.css queue.js submission-lock.php zip.php; do
     cp "$source_dir/$plugin/$name" "$stage/$plugin/$name"
     set -- "$@" "$plugin/$name"
 done
