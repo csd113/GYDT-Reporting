@@ -8,7 +8,7 @@ use serde::Deserialize;
 
 use crate::{Catalogue, CollectionSite, ExportError, draft, sha256};
 
-/// Private, locally supplied configuration for one Results workflow.
+/// Validated configuration for one Results workflow.
 pub struct Profile {
     catalogue: Catalogue,
     sites: [SiteDefinition; 2],
@@ -34,6 +34,19 @@ pub struct SiteDefinition {
 }
 
 impl Profile {
+    /// Uses the exact reviewed inputs built into the desktop application.
+    ///
+    /// # Errors
+    /// Returns an error if any of the embedded inputs fail profile validation.
+    pub fn embedded() -> Result<Self, ExportError> {
+        Self::from_inputs(
+            include_str!("../data/embedded-profile/profile.json"),
+            include_str!("../data/embedded-profile/substances-catalog.xml"),
+            include_str!("../data/embedded-profile/results-email.eml"),
+            include_str!("../data/embedded-profile/results-sms.txt"),
+        )
+    }
+
     /// Loads the four fixed profile files. No environment, network, or default
     /// staff directory is consulted.
     ///
@@ -42,12 +55,20 @@ impl Profile {
     pub fn load(directory: &Path) -> Result<Self, ExportError> {
         if !fs::symlink_metadata(directory).is_ok_and(|file| file.is_dir()) {
             return Err(ExportError::Profile(
-                "Place the privately supplied GYDT Profile folder beside the app, then reopen it.",
+                "The profile directory is missing or not a regular directory.",
             ));
         }
-        let config: Configuration =
-            serde_json::from_str(&read(directory, "profile.json", 16 * 1024)?)
-                .map_err(|_| ExportError::Profile("The profile configuration is invalid."))?;
+        Self::from_inputs(
+            &read(directory, "profile.json", 16 * 1024)?,
+            &read(directory, "substances-catalog.xml", 8 * 1024 * 1024)?,
+            &read(directory, "results-email.eml", 256 * 1024)?,
+            &read(directory, "results-sms.txt", 64 * 1024)?,
+        )
+    }
+
+    fn from_inputs(config: &str, xml: &str, email: &str, sms: &str) -> Result<Self, ExportError> {
+        let config: Configuration = serde_json::from_str(config)
+            .map_err(|_| ExportError::Profile("The profile configuration is invalid."))?;
         let [first, second] = &config.sites;
         if config.format_version != 1
             || !slug(&config.profile_id)
@@ -60,15 +81,11 @@ impl Profile {
                 "The profile configuration is invalid.",
             ));
         }
-        let xml = read(directory, "substances-catalog.xml", 8 * 1024 * 1024)?;
         if config.catalogue_sha256 != sha256(xml.as_bytes()) {
             return Err(ExportError::Catalogue);
         }
-        let catalogue = Catalogue::parse(&xml, &config.catalogue_sha256)?;
-        let templates = draft::Templates::load(
-            &read(directory, "results-email.eml", 256 * 1024)?,
-            &read(directory, "results-sms.txt", 64 * 1024)?,
-        )?;
+        let catalogue = Catalogue::parse(xml, &config.catalogue_sha256)?;
+        let templates = draft::Templates::load(email, sms)?;
         let storage_key =
             sha256(format!("{}\0{}\0{}", config.profile_id, first.token, second.token).as_bytes());
         Ok(Self {

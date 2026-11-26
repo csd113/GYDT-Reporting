@@ -1319,7 +1319,7 @@ dependencies = [
 
 [[package]]
 name = "gydt-results-compiler"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "base64",
  "directories",

@@ -847,3 +847,66 @@ fn private_profile_supplies_export_tokens_and_separate_state() -> Result<()> {
     assert!(Profile::load(&first).is_err());
     Ok(())
 }
+
+#[test]
+fn embedded_profile_preserves_previous_staff_store_and_jpeg_export() -> Result<()> {
+    use super::store::Store;
+    let profile = Profile::embedded()?;
+    let sidecar = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/embedded-profile");
+    let previous = Profile::load(&sidecar)?;
+    let root = tempfile::tempdir()?;
+    assert_eq!(
+        Store::profile_root(root.path(), &profile),
+        Store::profile_root(root.path(), &previous)
+    );
+    assert_eq!(
+        profile.catalogue().version(),
+        previous.catalogue().version()
+    );
+    assert_eq!(profile.catalogue().records().len(), 868);
+
+    let option = |label: &str| {
+        profile
+            .catalogue()
+            .records()
+            .find(|r| r.label == label)
+            .map(|record| Selection::Catalogue(record.id))
+            .ok_or("Missing required catalogue option")
+    };
+    let mut input = make_sample()?;
+    input.channel = Channel::None;
+    input.address.clear();
+    input.title = "Synthetic embedded profile".into();
+    input.expected = Some(option("Fentanyl")?);
+    input.rows = vec![
+        ResultRow {
+            substance: Some(option("4-MMC")?),
+            ..ResultRow::default()
+        },
+        ResultRow {
+            substance: Some(Selection::Unknown),
+            ..ResultRow::default()
+        },
+    ];
+    let photo = input
+        .photo
+        .as_ref()
+        .ok_or("Missing synthetic JPG")?
+        .bytes()?;
+    export_sample(&input, &profile, root.path())?;
+    let path = root.path().join("Synthetic embedded profile.zip");
+    let roundtrip = reopen(&path, &profile)?;
+    assert_eq!(roundtrip.expected, input.expected);
+    assert!(
+        roundtrip
+            .rows
+            .iter()
+            .map(|r| r.substance)
+            .eq(input.rows.iter().map(|r| r.substance))
+    );
+    assert_eq!(
+        roundtrip.photo.ok_or("Missing exported JPEG")?.bytes()?,
+        photo
+    );
+    Ok(())
+}

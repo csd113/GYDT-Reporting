@@ -33,9 +33,7 @@ const SETTINGS_SIZE: [f32; 2] = [1136.0, 553.0];
 const SAVE_DELAY: Duration = Duration::from_millis(280);
 
 pub(super) fn run() -> Result<()> {
-    let profile = Arc::new(Profile::load(&profile_directory(
-        &std::env::current_exe()?
-    )?)?);
+    let profile = Arc::new(Profile::embedded()?);
     let store = Store::open(&profile)?;
     let book = store.book(&profile)?;
     let records = store.records()?;
@@ -81,25 +79,6 @@ pub(super) fn run() -> Result<()> {
         }),
     )
     .map_err(|error| error.to_string().into())
-}
-
-fn profile_directory(executable: &Path) -> Result<PathBuf> {
-    let parent = executable
-        .parent()
-        .ok_or("Can't locate the application folder.")?;
-    #[cfg(target_os = "macos")]
-    if parent.ends_with("Contents/MacOS")
-        && let Some(bundle) = parent.ancestors().nth(2)
-        && bundle
-            .extension()
-            .is_some_and(|extension| extension == "app")
-    {
-        return Ok(bundle
-            .parent()
-            .ok_or("Can't locate the application folder.")?
-            .join("GYDT Profile"));
-    }
-    Ok(parent.join("GYDT Profile"))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]

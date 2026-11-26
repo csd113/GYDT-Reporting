@@ -4,3 +4,5 @@
 /scripts/synthetic-inputs.sha256 text eol=lf
 /assets/app-icon.svg -text whitespace=cr-at-eol
 /assets/app-icon.ico -text
+/data/embedded-profile/* -text whitespace=cr-at-eol
+/data/embedded-profile/results-sms.txt -text whitespace=cr-at-eol,-blank-at-eof

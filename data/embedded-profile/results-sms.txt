@@ -1,0 +1,5 @@
+Hello. Thank you for using Get Your Drugs Tested. We have analyzed your sample under the code word {{code_word}}.
+
+    The sample 1 was tested as {{sample_1_result}} with no evidence of other compounds detected above the test detection limit. The sample was tested {{sample_1_fentanyl_status}} for fentanyl or fentanyl analogues by test strips.
+    The sample 2 was tested as {{sample_2_result}}. The sample was tested {{sample_2_fentanyl_status}} for fentanyl or fentanyl analogues by test strips, was tested {{sample_2_benzodiazepines_status}} for benzodiazepines by test strips, was tested {{sample_2_medetomidine_status}} for medetomidine by test strips.
+

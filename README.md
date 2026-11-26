@@ -4,20 +4,17 @@ An offline desktop app for entering sample results, attaching JPEGs, and making
 ZIPs for the GYDT Results workflow. The app does not upload ZIPs or send
 client messages.
 
-## Staff setup
+## Get started
 
-1. Download the app for your platform from [GitHub Releases](https://github.com/csd113/GYDT-Reporting/releases) and extract it into its own folder.
-2. Obtain your **GYDT Profile** folder privately from your site coordinator.
-   Put that folder next to `GYDT Sample Reporting.exe` on Windows x64 or
-   `GYDT Sample Reporting.app` on Apple Silicon.
-3. Open the app and choose your export folder in Settings. If you are switching
-   builds during an intake, confirm the next submission number and Visit
-   before exporting. Existing app stores are not migrated.
+1. Download and extract the ZIP for your platform from [GitHub Releases](https://github.com/csd113/GYDT-Reporting/releases).
+2. Open `GYDT Sample Reporting.exe` on Windows x64 or
+   `GYDT Sample Reporting.app` on Apple Silicon. The approved profile is
+   built in. There is no separate profile file to install.
+3. Choose your export folder in Settings if you haven't already set it.
 
-The app refuses to start without a valid local profile. Keep the profile
-private and out of the export folder and this repository. The app does not
-read `GYDT_DATA_DIR` or reuse the previous demo or staff app folders. Keep
-the app and the profile in a location accessible only to authorized staff.
+Version 1.0.2 uses the same local store as 1.0.1 when it used the approved
+staff profile. Keep the app and exported results in locations accessible
+only to authorized staff. Keep using your existing WordPress importer.
 
 Verify downloads against the release SHA-256 manifest. The desktop app is not
 signed by a trusted publisher. If your verified download is blocked, see the
@@ -27,15 +24,16 @@ platform's per-app guidance without turning off system protections.
 
 ## Build and test
 
-Use the pinned Rust toolchain, then run `cargo test --locked`. The committed
-catalogue and draft templates are synthetic test inputs. They are not a
-runtime profile. Do not replace them with private files.
+Use the pinned Rust toolchain, then run `cargo test --locked`. The approved desktop
+inputs are in `data/embedded-profile/`. The separate synthetic catalogue
+and templates are test fixtures. Do not add staff records or local settings
+to this repository.
 
 Run `pwsh -File ./windows/build-app.ps1 -OutputPath ./GYDT-windows-x64.zip`
 on Windows x64, or `./macos/build-app.sh ./GYDT-macos-arm64.zip` on Apple
-Silicon. The resulting archives do not include a profile.
+Silicon. Neither build needs a separate profile folder.
 
 The [WordPress fixture source](wordpress/README.md) is for a disposable
 local test site only. It is not a replacement for an installed staff
 importer. The public synthetic importer is licensed under GPLv2 or later.
-That license does not apply to the desktop app or to staff files.
+That license does not apply to the desktop app.

@@ -1,5 +1,11 @@
 # Release notes
 
+## 1.0.2
+
+- Build the approved profile into the app, so it opens without a separate folder.
+- Keep the same local store, catalogue IDs, site mapping, and ZIP format for
+  installations that used the approved v1.0.1 profile.
+
 ## 1.0.1
 
 - Require a separately supplied GYDT Profile for the actual desktop workflow.

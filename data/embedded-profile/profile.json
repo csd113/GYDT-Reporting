@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "catalogue_sha256": "14ecc3007de821d1b5484722671e18b481fe5edd159d31f611ffb426d8cdf761",
+  "sites": [
+    {
+      "label": "East Hastings",
+      "token": "gydt",
+      "code": "009"
+    },
+    {
+      "label": "Broadway",
+      "token": "west",
+      "code": "009"
+    }
+  ],
+  "profile_id": "gydt-staff"
+}
