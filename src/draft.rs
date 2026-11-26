@@ -15,6 +15,29 @@ const HTML_PART: &str =
 const HTML_EXAMPLE_PREFIX: &str = " We have analyzed your\nsample under the code word ---";
 const BOUNDARY: &str = "gydt-results-alternative-1";
 
+pub(crate) struct Templates {
+    email: String,
+    sms: String,
+}
+
+impl Templates {
+    pub(crate) fn fixture() -> Self {
+        Self {
+            email: EMAIL.into(),
+            sms: SMS.into(),
+        }
+    }
+
+    pub(crate) fn load(email: &str, sms: &str) -> Result<Self, ExportError> {
+        let email = email.replace("\r\n", "\n");
+        let sms = sms.replace("\r\n", "\n");
+        introduction(&sms)?;
+        email_parts(&email)?;
+        html_body(&email, &[])?;
+        Ok(Self { email, sms })
+    }
+}
+
 pub(crate) fn validate_contact(contact: Contact<'_>) -> Result<Contact<'_>, ExportError> {
     match contact {
         Contact::Email(address) => match address.trim() {
@@ -56,6 +79,7 @@ fn mailbox(address: &str) -> bool {
 pub(crate) fn make(
     contact: Contact<'_>,
     catalogue: &Catalogue,
+    templates: &Templates,
     samples: &[Payload<'_>],
     stem: &str,
 ) -> Result<Option<Artifact>, ExportError> {
@@ -70,20 +94,13 @@ pub(crate) fn make(
     let (extension, bytes) = match contact {
         Contact::WordPressOnly => return Ok(None),
         Contact::Text(_) => {
-            let body = sample_body(introduction(SMS)?, &summarize()?);
+            let body = sample_body(introduction(&templates.sms)?, &summarize()?);
             ("txt", body.into_bytes())
         }
         Contact::Email(address) => {
             let summaries = summarize()?;
-            let email = EMAIL.replace("\r\n", "\n");
-            let subject = email
-                .lines()
-                .find_map(|line| line.strip_prefix("Subject: "))
-                .ok_or(ExportError::Template)?;
-            let (_, footer) = email
-                .split_once(FOOTER_START)
-                .ok_or(ExportError::Template)?;
-            let (footer, _) = footer.split_once("\n--").ok_or(ExportError::Template)?;
+            let email = templates.email.replace("\r\n", "\n");
+            let (subject, footer) = email_parts(&email)?;
             let mut body = sample_body(introduction(&email)?, &summaries);
             body.push('\n');
             body.push_str(FOOTER_START);
@@ -100,6 +117,19 @@ pub(crate) fn make(
         name: format!("{stem}.{extension}"),
         bytes,
     }))
+}
+
+fn email_parts(email: &str) -> Result<(&str, &str), ExportError> {
+    let subject = email
+        .lines()
+        .find_map(|line| line.strip_prefix("Subject: "))
+        .ok_or(ExportError::Template)?;
+    let (_, footer) = email
+        .split_once(FOOTER_START)
+        .ok_or(ExportError::Template)?;
+    let (footer, _) = footer.split_once("\n--").ok_or(ExportError::Template)?;
+    introduction(email)?;
+    Ok((subject, footer))
 }
 
 fn introduction(template: &str) -> Result<&str, ExportError> {

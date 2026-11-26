@@ -1,11 +1,8 @@
 [package]
 name = "gydt-results-compiler"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 rust-version = "1.100.0"
-
-[features]
-public-demo = []
 
 [dependencies]
 base64 = "0.22.1"

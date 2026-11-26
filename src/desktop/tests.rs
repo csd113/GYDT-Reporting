@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use gydt_results_compiler::{Catalogue, ExportRequest, prepare_export};
+use gydt_results_compiler::{ExportRequest, Profile, prepare_profile_export};
 use jiff::Timestamp;
 use serde_json::{Value, json};
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
@@ -56,10 +56,42 @@ fn make_sample() -> Result<Draft> {
     Ok(draft)
 }
 
-fn export_sample(draft: &Draft, catalogue: &Catalogue, folder: &Path) -> Result<()> {
-    let export = prepare_export(
+fn fixture_profile() -> Result<Profile> {
+    let tmp = tempfile::tempdir()?;
+    write_fixture_profile(tmp.path(), ["fixture-east", "fixture-west"])?;
+    Ok(Profile::load(tmp.path())?)
+}
+
+fn write_fixture_profile(root: &Path, [first, second]: [&str; 2]) -> Result<()> {
+    let xml = include_bytes!("../../data/substances-catalog.xml");
+    fs::write(root.join("substances-catalog.xml"), xml)?;
+    fs::write(
+        root.join("results-email.eml"),
+        include_bytes!("../../templates/results-email.eml"),
+    )?;
+    fs::write(
+        root.join("results-sms.txt"),
+        include_bytes!("../../templates/results-sms.txt"),
+    )?;
+    fs::write(
+        root.join("profile.json"),
+        serde_json::to_vec(&json!({
+            "format_version": 1,
+            "profile_id": "synthetic-lab",
+            "catalogue_sha256": digest(xml),
+            "sites":[
+                {"label":"Synthetic East","token":first,"code":"901"},
+                {"label":"Synthetic West","token":second,"code":"901"}
+            ]
+        }))?,
+    )?;
+    Ok(())
+}
+
+fn export_sample(draft: &Draft, profile: &Profile, folder: &Path) -> Result<()> {
+    let export = prepare_profile_export(
         &mut [draft.to_sample()?],
-        catalogue,
+        profile,
         ExportRequest {
             contact: draft.channel.contact(&draft.address),
             exported_at: Timestamp::now(),
@@ -98,7 +130,7 @@ fn repackage(path: &Path, members: &[(String, Vec<u8>)]) -> Result<()> {
 
 #[test]
 fn desktop_file_name_preview_matches_single_sample_outputs() -> Result<()> {
-    let catalogue = Catalogue::bundled()?;
+    let catalogue = fixture_profile()?;
     let mut draft = make_sample()?;
     for (title, channel, address) in [
         (
@@ -114,7 +146,7 @@ fn desktop_file_name_preview_matches_single_sample_outputs() -> Result<()> {
         draft.channel = channel;
         draft.address = address.into();
         let (zip, client_draft) = super::export::preview(&draft).ok_or("Missing file names")?;
-        let prepared = prepare_export(
+        let prepared = prepare_profile_export(
             &mut [draft.to_sample()?],
             &catalogue,
             ExportRequest {
@@ -137,7 +169,7 @@ fn desktop_file_name_preview_matches_single_sample_outputs() -> Result<()> {
 #[test]
 fn desktop_reopens_exported_zip_with_same_identity_and_no_contact() -> Result<()> {
     let folder = tempfile::tempdir()?;
-    let catalogue = Catalogue::bundled()?;
+    let catalogue = fixture_profile()?;
     let draft = make_sample()?;
     export_sample(&draft, &catalogue, folder.path())?;
     let stem = format!("sample-{}", digest(draft.title.as_bytes()));
@@ -175,7 +207,7 @@ fn dropping_a_zip_keeps_open_edits_and_legacy_records() -> Result<()> {
     let samples = root.path().join("samples");
     fs::create_dir(&exports)?;
     fs::create_dir(&samples)?;
-    let catalogue = Catalogue::bundled()?;
+    let catalogue = fixture_profile()?;
     let draft = make_sample()?;
     export_sample(&draft, &catalogue, &exports)?;
     let zip = exports.join(format!("sample-{}.zip", digest(draft.title.as_bytes())));
@@ -237,7 +269,7 @@ fn dropping_a_zip_keeps_open_edits_and_legacy_records() -> Result<()> {
 #[test]
 fn desktop_rejects_invalid_json_and_unsupported_zip_before_populating_form() -> Result<()> {
     let folder = tempfile::tempdir()?;
-    let catalogue = Catalogue::bundled()?;
+    let catalogue = fixture_profile()?;
     let draft = make_sample()?;
     export_sample(&draft, &catalogue, folder.path())?;
     let stem = format!("sample-{}", digest(draft.title.as_bytes()));
@@ -303,7 +335,7 @@ fn desktop_rejects_invalid_json_and_unsupported_zip_before_populating_form() -> 
 #[test]
 fn shared_prefix_scans_only_primary_sample_filenames_and_survives_a_missing_folder() -> Result<()> {
     let folder = tempfile::tempdir()?;
-    let book = Book::default();
+    let book = Book::for_profile(&fixture_profile()?);
     let day = "2026-11-22".parse()?;
     let east = book.settings.prefix(Site::ExampleEast, day);
     let west = book.settings.prefix(Site::ExampleWest, day);
@@ -338,17 +370,11 @@ fn open_app(root: &Path) -> Result<(eframe::egui::Context, super::App)> {
     use std::sync::Arc;
 
     let store = Store::open_at(root.to_owned())?;
-    let book = store.book()?;
+    let profile = Arc::new(fixture_profile()?);
+    let book = store.book(&profile)?;
     let records = store.records()?;
     let ctx = eframe::egui::Context::default();
-    let app = App::new(
-        &ctx,
-        store,
-        book,
-        records,
-        Arc::new(Catalogue::bundled()?),
-        &ui::orbit()?,
-    );
+    let app = App::new(&ctx, store, book, records, profile, &ui::orbit()?);
     Ok((ctx, app))
 }
 
@@ -492,7 +518,7 @@ fn plain_email(draft: &str) -> Result<String> {
 fn combined_contact_resolves_across_tab_orders_and_uses_the_first_title() -> Result<()> {
     use super::export::{self, Selection as Batch};
 
-    let catalogue = Catalogue::bundled()?;
+    let catalogue = fixture_profile()?;
     let all = Batch {
         tabs: vec![0, 1],
         wordpress_only: false,
@@ -588,7 +614,7 @@ fn desktop_previews_arithmetic_jpegs_and_exports_the_original_bytes() -> Result<
     )?;
     assert!(sequential.windows(2).any(|pair| pair == [0xff, 0xc9]));
     assert!(progressive.windows(2).any(|pair| pair == [0xff, 0xca]));
-    let catalogue = Catalogue::bundled()?;
+    let catalogue = fixture_profile()?;
     for (jpeg, dimensions) in [(sequential, (8, 6)), (progressive, (16, 16))] {
         let root = tempfile::tempdir()?;
         let path = root.path().join("source.JPG");
@@ -635,7 +661,7 @@ fn picker_accepts_webcam_jpg_aliases_without_changing_source_or_export() -> Resu
         assert_eq!(photo.extension, extension);
         assert_eq!(photo.bytes()?, jpeg);
         let exports = tempfile::tempdir()?;
-        export_sample(&tab.draft, &app.catalogue, exports.path())?;
+        export_sample(&tab.draft, &app.profile, exports.path())?;
         assert!(
             members(&exports.path().join("Synthetic camera sample.zip"))?
                 .contains(&(format!("Synthetic camera sample.{extension}"), jpeg.clone()))
@@ -765,5 +791,59 @@ fn picker_distinguishes_locked_camera_files_from_oversize_files() -> Result<()> 
             .is_some_and(|tab| tab.draft.photo.is_none())
     );
     assert_eq!(app.active, Some(0));
+    Ok(())
+}
+
+#[test]
+fn private_profile_supplies_export_tokens_and_separate_state() -> Result<()> {
+    use super::store::Store;
+    let root = tempfile::tempdir()?;
+    let missing = root.path().join("missing");
+    assert!(Profile::load(&missing).is_err());
+    assert!(!missing.exists());
+
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    let exports = root.path().join("exports");
+    for dir in [&first, &second, &exports] {
+        fs::create_dir(dir)?;
+    }
+    write_fixture_profile(&first, ["trial-a", "trial-b"])?;
+    write_fixture_profile(&second, ["test-a", "test-b"])?;
+    let profile = Profile::load(&first)?;
+    let mismatch = Profile::load(&second)?;
+    let staff = root.path().join("GYDT Sample Reporting");
+    fs::create_dir(&staff)?;
+    fs::write(staff.join("book.json"), b"synthetic staff sentinel")?;
+    let location = Store::profile_root(root.path(), &profile);
+    assert_ne!(location, Store::profile_root(root.path(), &mismatch));
+    let store = Store::open_at(location)?;
+    assert!(store.book(&profile)?.history.is_empty());
+    assert_eq!(
+        fs::read(staff.join("book.json"))?,
+        b"synthetic staff sentinel"
+    );
+    assert_eq!(fs::read_dir(staff)?.count(), 1);
+
+    let mut draft = make_sample()?;
+    draft.channel = Channel::None;
+    draft.address.clear();
+    export_sample(&draft, &profile, &exports)?;
+    let path = exports.join(format!("{}.zip", super::model::filename_stem(&draft.title)));
+    let files = members(&path)?;
+    let payload = files
+        .iter()
+        .find(|(name, _)| name == "test_data.json")
+        .ok_or("missing data")?;
+    let data: Value = serde_json::from_slice(&payload.1)?;
+    assert_eq!(data.get("site"), Some(&json!("trial-b")));
+    assert_eq!(reopen(&path, &profile)?.site, draft.site);
+    assert!(reopen(&path, &mismatch).is_err());
+
+    fs::write(first.join("results-sms.txt"), b"not a valid template")?;
+    assert!(Profile::load(&first).is_err());
+    write_fixture_profile(&first, ["trial-a", "trial-b"])?;
+    fs::write(first.join("substances-catalog.xml"), b"not the pinned XML")?;
+    assert!(Profile::load(&first).is_err());
     Ok(())
 }

@@ -11,6 +11,7 @@ pub(crate) const VERSION: &str =
 
 pub struct Catalogue {
     records: BTreeMap<u64, SubstanceRecord>,
+    version: String,
 }
 
 pub struct SubstanceRecord {
@@ -36,7 +37,15 @@ impl Catalogue {
         if VERSION.strip_prefix("sha256:") != Some(digest.as_str()) {
             return Err(ExportError::Catalogue);
         }
-        let doc = Document::parse(XML).map_err(|_| ExportError::Catalogue)?;
+        let catalogue = Self::parse(XML, &digest)?;
+        if catalogue.records.len() != 3 {
+            return Err(ExportError::Catalogue);
+        }
+        Ok(catalogue)
+    }
+
+    pub(crate) fn parse(xml: &str, digest: &str) -> Result<Self, ExportError> {
+        let doc = Document::parse(xml).map_err(|_| ExportError::Catalogue)?;
         let mut records = BTreeMap::new();
         for item in doc.descendants().filter(|node| node.has_tag_name("item")) {
             let field = |name| {
@@ -85,10 +94,18 @@ impl Catalogue {
                 return Err(ExportError::Catalogue);
             }
         }
-        if records.len() != 3 {
+        if records.is_empty() || records.len() > 10_000 {
             return Err(ExportError::Catalogue);
         }
-        Ok(Self { records })
+        Ok(Self {
+            records,
+            version: format!("sha256:{digest}"),
+        })
+    }
+
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     #[must_use]

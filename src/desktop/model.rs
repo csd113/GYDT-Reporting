@@ -80,17 +80,19 @@ pub(super) enum Site {
 impl Site {
     pub(super) const ALL: [Self; 2] = [Self::ExampleEast, Self::ExampleWest];
 
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::ExampleEast => "Example East",
-            Self::ExampleWest => "Example West",
-        }
-    }
-
     pub(super) const fn slot(self) -> usize {
         match self {
             Self::ExampleEast => 0,
             Self::ExampleWest => 1,
+        }
+    }
+}
+
+impl From<CollectionSite> for Site {
+    fn from(site: CollectionSite) -> Self {
+        match site {
+            CollectionSite::ExampleEast => Self::ExampleEast,
+            CollectionSite::ExampleWest => Self::ExampleWest,
         }
     }
 }

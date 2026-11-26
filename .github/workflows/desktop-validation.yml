@@ -20,9 +20,9 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked
       - run: cargo test --locked --all-features
-      - name: Build the synthetic Windows x64 ZIP
+      - name: Build the profile-required Windows x64 ZIP
         shell: pwsh
-        run: ./windows/build-app.ps1 (Join-Path $env:RUNNER_TEMP 'GYDT-windows-x64-synthetic.zip')
+        run: ./windows/build-app.ps1 (Join-Path $env:RUNNER_TEMP 'GYDT-windows-x64.zip')
 
   macos:
     runs-on: macos-26
@@ -36,5 +36,5 @@ jobs:
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo test --locked
       - run: cargo test --locked --all-features
-      - name: Build the synthetic Apple Silicon ZIP
-        run: ./macos/build-app.sh "$RUNNER_TEMP/GYDT-macos-arm64-synthetic.zip"
+      - name: Build the profile-required Apple Silicon ZIP
+        run: ./macos/build-app.sh "$RUNNER_TEMP/GYDT-macos-arm64.zip"

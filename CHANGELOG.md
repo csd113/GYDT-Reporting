@@ -1,6 +1,14 @@
 # Release notes
 
-## 1.0.0 · preparation
+## 1.0.1
+
+- Require a separately supplied GYDT Profile for the actual desktop workflow.
+  The downloads include no private catalogue, site definitions or draft
+  templates. New local state is separate from earlier app stores.
+- Retain the existing format-1 ZIP and JPEG export-copy behavior. Exports use
+  the configured site's exact tokens and the approved catalogue digest.
+
+## 1.0.0 · demo release withdrawn
 
 - Client email and text draft bodies omit the internal submission number. It
   remains in local records, internal ZIP exports and local draft filenames.

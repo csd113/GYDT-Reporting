@@ -5,7 +5,7 @@ use eframe::egui::{
     Modifiers, Popup, Rect, RectAlign, Response, RichText, ScrollArea, Stroke, TextEdit, Ui,
     UiBuilder, vec2,
 };
-use gydt_results_compiler::{Catalogue, live_textures};
+use gydt_results_compiler::{Catalogue, Profile, live_textures};
 use oxiarc_jpeg::{DecodeLimits, DecodeOptions, Decoder, EntropyCoding, PixelFormat};
 
 use super::{
@@ -129,7 +129,101 @@ fn arithmetic_preview(bytes: &[u8]) -> Option<image::DynamicImage> {
 pub(super) struct SubstanceChoice {
     value: Selection,
     label: String,
-    search: String,
+    official: SearchKeys,
+    aliases: SearchKeys,
+}
+
+impl SubstanceChoice {
+    fn new(value: Selection, label: String, official: &str, aliases: &str) -> Self {
+        Self {
+            value,
+            label,
+            official: SearchKeys::new(official),
+            aliases: SearchKeys::new(aliases),
+        }
+    }
+
+    fn match_rank(&self, query: &SearchKeys) -> Option<u8> {
+        if self.official.plain == query.plain {
+            Some(0)
+        } else if self.official.dash_matches(query, |field, key| field == key) {
+            Some(1)
+        } else if self.aliases.plain.contains(&query.plain) {
+            Some(2)
+        } else if self
+            .aliases
+            .dash_matches(query, |field, key| field.contains(key))
+        {
+            Some(3)
+        } else {
+            None
+        }
+    }
+}
+
+struct SearchKeys {
+    plain: String,
+    joined: String,
+    spaced: String,
+}
+
+impl SearchKeys {
+    fn new(text: &str) -> Self {
+        let plain = text.trim().to_lowercase();
+        let joined = normalize_dashes(&plain, true);
+        let spaced = normalize_dashes(&plain, false);
+        Self {
+            plain,
+            joined,
+            spaced,
+        }
+    }
+
+    fn dash_matches(&self, query: &Self, matches: impl Fn(&str, &str) -> bool) -> bool {
+        (!query.joined.is_empty() && matches(&self.joined, &query.joined))
+            || (!query.spaced.is_empty() && matches(&self.spaced, &query.spaced))
+    }
+}
+
+fn normalize_dashes(text: &str, join: bool) -> String {
+    let mut output = String::with_capacity(text.len());
+    let (mut pending_space, mut after_dash) = (false, false);
+    for c in text.chars() {
+        if matches!(
+            c,
+            '-' | '\u{00ad}' | '\u{2010}'
+                ..='\u{2015}' | '\u{2212}' | '\u{fe58}' | '\u{fe63}' | '\u{ff0d}'
+        ) {
+            pending_space = !join;
+            after_dash = true;
+        } else if c.is_whitespace() {
+            pending_space |= !after_dash;
+        } else {
+            if pending_space && !output.is_empty() {
+                output.push(' ');
+            }
+            pending_space = false;
+            after_dash = false;
+            output.push(c);
+        }
+    }
+    output
+}
+
+fn search_substances<'a>(options: &'a [SubstanceChoice], query: &str) -> Vec<&'a SubstanceChoice> {
+    if query.trim().is_empty() {
+        return options.iter().collect();
+    }
+    let query = SearchKeys::new(query);
+    if query.joined.is_empty() {
+        return Vec::new();
+    }
+    let mut matches: Vec<_> = options
+        .iter()
+        .filter_map(|choice| choice.match_rank(&query).map(|rank| (rank, choice)))
+        .collect();
+    matches.sort_by_key(|(rank, _)| *rank);
+    matches.into_iter().map(|(_, choice)| choice).collect()
 }
 
 pub(super) fn substances(catalogue: &Catalogue) -> Vec<SubstanceChoice> {
@@ -148,34 +242,22 @@ pub(super) fn substances(catalogue: &Catalogue) -> Vec<SubstanceChoice> {
             } else {
                 record.label.clone()
             };
-            SubstanceChoice {
-                value: Selection::Catalogue(record.id),
+            SubstanceChoice::new(
+                Selection::Catalogue(record.id),
                 label,
-                search: format!(
-                    "{} {} {}",
-                    record.label.to_lowercase(),
-                    record.slug,
-                    record.id
-                ),
-            }
+                &record.label,
+                &format!("{} {} {}", record.label, record.slug, record.id),
+            )
         })
         .collect();
     choices.sort_by_cached_key(|choice| choice.label.to_lowercase());
     choices.insert(
         0,
-        SubstanceChoice {
-            value: Selection::Other,
-            label: "Other".into(),
-            search: "other".into(),
-        },
+        SubstanceChoice::new(Selection::Other, "Other".into(), "Other", "Other"),
     );
     choices.insert(
         0,
-        SubstanceChoice {
-            value: Selection::Unknown,
-            label: "Unknown".into(),
-            search: "unknown".into(),
-        },
+        SubstanceChoice::new(Selection::Unknown, "Unknown".into(), "Unknown", "Unknown"),
     );
     choices
 }
@@ -205,7 +287,9 @@ impl App {
             && let Some(settings) = &mut self.settings
         {
             let action = ui
-                .add_enabled_ui(self.dialog.is_none(), |ui| settings_view(ui, settings))
+                .add_enabled_ui(self.dialog.is_none(), |ui| {
+                    settings_view(ui, settings, &self.profile)
+                })
                 .inner;
             match action {
                 SettingsAction::ChooseFolder => self.choose_folder(true),
@@ -304,7 +388,7 @@ impl App {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.push_id(("sample", index), |ui| {
-                                sample_form(ui, tab, &self.options, folder_chosen)
+                                sample_form(ui, tab, &self.options, folder_chosen, &self.profile)
                             })
                             .inner
                         })
@@ -692,14 +776,11 @@ fn export_format(ui: &mut Ui, width: f32) -> Response {
     combo(
         ui,
         "export-format",
-        "Synthetic WordPress fixture",
+        "WordPress Results ZIP",
         width,
         false,
         |ui| {
-            if ui
-                .selectable_label(true, "Synthetic WordPress fixture")
-                .clicked()
-            {
+            if ui.selectable_label(true, "WordPress Results ZIP").clicked() {
                 ui.close();
             }
             ui.add_enabled(false, Button::new("BCCSCU (In Development)").frame(false));
@@ -747,6 +828,7 @@ fn sample_form(
     tab: &mut Tab,
     options: &[SubstanceChoice],
     folder_chosen: bool,
+    profile: &Profile,
 ) -> FormEdit {
     let before = tab.draft.clone();
     let tab_missing = tab.missing;
@@ -776,7 +858,13 @@ fn sample_form(
                         provisional,
                     );
                 } else {
-                    photo = right_column(ui, &mut tab.draft, tab.thumbnail.as_ref(), tab_missing);
+                    photo = right_column(
+                        ui,
+                        &mut tab.draft,
+                        tab.thumbnail.as_ref(),
+                        tab_missing,
+                        profile,
+                    );
                 }
             };
             if columns < 735.0 {
@@ -1046,6 +1134,7 @@ fn right_column(
     draft: &mut Draft,
     thumbnail: Option<&egui::TextureHandle>,
     missing: bool,
+    profile: &Profile,
 ) -> bool {
     ui.spacing_mut().item_spacing.y = 12.0;
     let width = ui.available_width();
@@ -1071,7 +1160,13 @@ fn right_column(
             photo = photo_target(ui, attachment, thumbnail);
         },
     );
-    site_field(ui, "Collection location", "(required)", &mut draft.site);
+    site_field(
+        ui,
+        "Collection location",
+        "(required)",
+        &mut draft.site,
+        profile,
+    );
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
         ui.add_space(8.0);
@@ -1445,13 +1540,12 @@ fn substance_menu(
     if field.changed() {
         search.index = 0;
     }
-    let query = search.query.to_lowercase();
+    let query = search.query.trim();
     let choices: Vec<_> = std::iter::once((None, "Blank"))
         .filter(|_| query.is_empty())
         .chain(
-            options
-                .iter()
-                .filter(|choice| choice.search.contains(query.trim()))
+            search_substances(options, query)
+                .into_iter()
                 .map(|choice| (Some(choice.value), choice.label.as_str())),
         )
         .collect();
@@ -1633,17 +1727,23 @@ fn text(
     })
 }
 
-fn site_field(ui: &mut Ui, name: &str, detail: &str, current: &mut Site) -> Response {
+fn site_field(
+    ui: &mut Ui,
+    name: &str,
+    detail: &str,
+    current: &mut Site,
+    profile: &Profile,
+) -> Response {
     field_group(ui, name, detail, |ui| {
         combo(
             ui,
             name,
-            current.label(),
+            profile.site((*current).into()).label(),
             ui.available_width(),
             false,
             |ui| {
                 for site in Site::ALL {
-                    select(ui, current, site, site.label());
+                    select(ui, current, site, profile.site(site.into()).label());
                 }
             },
         )
@@ -1893,7 +1993,7 @@ enum CompletionAction {
     Next,
 }
 
-fn settings_view(ui: &mut Ui, settings: &mut SettingsPane) -> SettingsAction {
+fn settings_view(ui: &mut Ui, settings: &mut SettingsPane, profile: &Profile) -> SettingsAction {
     band(
         ui,
         SETTINGS_HEADING_HEIGHT,
@@ -1925,7 +2025,7 @@ fn settings_view(ui: &mut Ui, settings: &mut SettingsPane) -> SettingsAction {
                     .max_height(height)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        action = settings_sections(ui, settings, section);
+                        action = settings_sections(ui, settings, section, profile);
                     });
             }
         });
@@ -2020,6 +2120,7 @@ fn settings_sections(
     ui: &mut Ui,
     settings: &mut SettingsPane,
     section: Option<SettingsSection>,
+    profile: &Profile,
 ) -> SettingsAction {
     Frame::new()
         .inner_margin(Margin {
@@ -2032,7 +2133,7 @@ fn settings_sections(
             ui.set_width(ui.available_width().min(656.0));
             ui.spacing_mut().item_spacing.y = 12.0;
             let location = ui.label(bold("Location", 16.0));
-            settings_location(ui, settings);
+            settings_location(ui, settings, profile);
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(2.0);
@@ -2057,7 +2158,7 @@ fn settings_sections(
         .inner
 }
 
-fn settings_location(ui: &mut Ui, settings: &mut SettingsPane) {
+fn settings_location(ui: &mut Ui, settings: &mut SettingsPane, profile: &Profile) {
     ui.allocate_ui(vec2(360.0, 0.0), |ui| {
         ui.set_width(360.0);
         site_field(
@@ -2065,6 +2166,7 @@ fn settings_location(ui: &mut Ui, settings: &mut SettingsPane) {
             "Default collection location",
             "",
             &mut settings.draft.site,
+            profile,
         );
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -2080,7 +2182,7 @@ fn settings_location(ui: &mut Ui, settings: &mut SettingsPane) {
                 |ui| {
                     field(
                         ui,
-                        "Example East",
+                        profile.site(Site::ExampleEast.into()).label(),
                         "",
                         east,
                         show_errors && !Settings::valid_code(east),
@@ -2090,7 +2192,7 @@ fn settings_location(ui: &mut Ui, settings: &mut SettingsPane) {
                 |ui| {
                     field(
                         ui,
-                        "ExampleWest",
+                        profile.site(Site::ExampleWest.into()).label(),
                         "",
                         west,
                         show_errors && !Settings::valid_code(west),
@@ -2442,4 +2544,76 @@ fn modal_title(ui: &mut Ui, title: &str) {
 
 fn path_label(ui: &mut Ui, path: &Path) {
     ui.label(path.display().to_string());
+}
+
+#[cfg(test)]
+mod substance_search_tests {
+    use super::{Selection, SubstanceChoice, search_substances};
+
+    fn choice(id: u64, label: &str, alias: &str) -> SubstanceChoice {
+        SubstanceChoice::new(Selection::Catalogue(id), label.into(), label, alias)
+    }
+
+    #[test]
+    fn dash_variants_match_in_both_directions_without_merging_choices() {
+        let options = [
+            choice(1, "Test-Alpha", "Test-Alpha sample-slug"),
+            choice(2, "TestAlpha", "TestAlpha other-slug"),
+            choice(3, "Different", "Different"),
+        ];
+        for query in ["testalpha", "TEST-ALPHA", "Test – ALPHA"] {
+            let labels: Vec<_> = search_substances(&options, query)
+                .into_iter()
+                .map(|found| found.label.as_str())
+                .collect();
+            assert_eq!(labels.len(), 2, "{query}");
+            assert!(labels.contains(&"TestAlpha") && labels.contains(&"Test-Alpha"));
+        }
+        let spaced = search_substances(&options, "test alpha");
+        assert_eq!(spaced.len(), 1);
+        assert!(
+            spaced
+                .first()
+                .is_some_and(|hit| hit.value == Selection::Catalogue(1))
+        );
+        let hits = search_substances(&options, "TestAlpha");
+        assert!(
+            hits.first()
+                .is_some_and(|hit| hit.value == Selection::Catalogue(2))
+        );
+        assert!(
+            hits.get(1)
+                .is_some_and(|hit| hit.value == Selection::Catalogue(1))
+        );
+        assert!(
+            search_substances(&options, "sampleslug")
+                .first()
+                .is_some_and(|hit| hit.value == Selection::Catalogue(1))
+        );
+        assert!(search_substances(&options, "test-beta").is_empty());
+        for separators in ["---", " – — ", "− ‐ －"] {
+            assert!(
+                search_substances(&options, separators).is_empty(),
+                "{separators}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_name_ranks_before_broader_plain_match() {
+        let options = [
+            choice(1, "Other Test Alpha", "Other Test Alpha"),
+            choice(2, "Test Alpha", "Test Alpha"),
+        ];
+        let hits = search_substances(&options, "test alpha");
+        assert_eq!(hits.len(), 2);
+        assert!(
+            hits.first()
+                .is_some_and(|hit| hit.value == Selection::Catalogue(2))
+        );
+        assert!(
+            hits.get(1)
+                .is_some_and(|hit| hit.value == Selection::Catalogue(1))
+        );
+    }
 }

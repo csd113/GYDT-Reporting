@@ -9,8 +9,8 @@ use uuid::{Uuid, Variant, Version};
 use zip::{CompressionMethod, System, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    AdverseEvents, Catalogue, CollectionSite, Consumption, ExportError, Sample, Strips, Substance,
-    catalogue, draft, invalid, live_textures, sha256,
+    AdverseEvents, Catalogue, CollectionSite, Consumption, ExportError, Profile, Sample, Strips,
+    Substance, draft, invalid, live_textures, sha256,
 };
 
 const MAX_MANIFEST: usize = 8 * 1024;
@@ -123,7 +123,7 @@ impl PreparedExport {
 pub(crate) struct Payload<'a> {
     pub(crate) submission_number: String,
     visit: u32,
-    site: CollectionSite,
+    site: &'a str,
     analysis_date: String,
     collection_date: String,
     expected_substance: String,
@@ -164,7 +164,7 @@ struct Manifest<'a> {
     format_version: u8,
     sample_id: String,
     exported_at: &'a str,
-    catalogue_version: &'static str,
+    catalogue_version: &'a str,
     files: BTreeMap<&'a str, Member>,
 }
 
@@ -185,6 +185,42 @@ pub fn prepare_export(
     catalogue: &Catalogue,
     request: ExportRequest<'_>,
 ) -> Result<PreparedExport, ExportError> {
+    let templates = draft::Templates::fixture();
+    prepare(samples, catalogue, &templates, fixture_site, request)
+}
+
+/// Prepares the same format-1 export with the selected private profile.
+///
+/// # Errors
+/// Returns an error if the supplied sample or profile cannot form a ZIP.
+pub fn prepare_profile_export(
+    samples: &mut [Sample],
+    profile: &Profile,
+    request: ExportRequest<'_>,
+) -> Result<PreparedExport, ExportError> {
+    prepare(
+        samples,
+        profile.catalogue(),
+        &profile.templates,
+        |site| profile.site(site).token(),
+        request,
+    )
+}
+
+fn fixture_site(site: CollectionSite) -> &'static str {
+    match site {
+        CollectionSite::ExampleEast => "fixture-east",
+        CollectionSite::ExampleWest => "fixture-west",
+    }
+}
+
+fn prepare<'a>(
+    samples: &mut [Sample],
+    catalogue: &Catalogue,
+    templates: &draft::Templates,
+    site_token: impl Fn(CollectionSite) -> &'a str,
+    request: ExportRequest<'_>,
+) -> Result<PreparedExport, ExportError> {
     let contact = draft::validate_contact(request.contact)?;
     if !matches!(contact, Contact::WordPressOnly)
         && let Some((first, rest)) = samples.split_first()
@@ -199,9 +235,11 @@ pub fn prepare_export(
         .iter()
         .enumerate()
         .map(|(index, sample)| {
-            validate(sample, catalogue).map_err(|error| ExportError::Sample {
-                number: index + 1,
-                error: Box::new(error),
+            validate(sample, catalogue, site_token(sample.site)).map_err(|error| {
+                ExportError::Sample {
+                    number: index + 1,
+                    error: Box::new(error),
+                }
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -242,10 +280,10 @@ pub fn prepare_export(
             let reserved = visit_codes.entry(visit_key(sample)).or_default();
             payload.client = reserve_code(reserved, random_code_start()?)?;
         }
-        let bytes = package(sample, payload, &stem, &exported_at)?;
+        let bytes = package(sample, payload, &stem, &exported_at, catalogue.version())?;
         outputs.push(Artifact { name, bytes });
     }
-    if let Some(artifact) = draft::make(contact, catalogue, &payloads, &first_stem)? {
+    if let Some(artifact) = draft::make(contact, catalogue, templates, &payloads, &first_stem)? {
         outputs.push(artifact);
     }
     let codes: Vec<_> = payloads.into_iter().map(|payload| payload.client).collect();
@@ -257,7 +295,11 @@ pub fn prepare_export(
     Ok(PreparedExport { outputs, history })
 }
 
-fn validate<'a>(sample: &'a Sample, catalogue: &Catalogue) -> Result<Payload<'a>, ExportError> {
+fn validate<'a>(
+    sample: &'a Sample,
+    catalogue: &Catalogue,
+    site: &'a str,
+) -> Result<Payload<'a>, ExportError> {
     validate_identity(sample)?;
     let submission_number = required_text(&sample.submission_number, "submission number", 200)?;
     let expected_substance = substance(sample.expected_substance, catalogue, "expected substance")?;
@@ -288,7 +330,7 @@ fn validate<'a>(sample: &'a Sample, catalogue: &Catalogue) -> Result<Payload<'a>
     Ok(Payload {
         submission_number,
         visit: sample.visit,
-        site: sample.site,
+        site,
         analysis_date: sample.analysis_date.to_string(),
         collection_date: sample.collection_date.to_string(),
         expected_substance,
@@ -586,6 +628,7 @@ fn package(
     payload: &Payload<'_>,
     stem: &str,
     exported_at: &str,
+    catalogue_version: &str,
 ) -> Result<Vec<u8>, ExportError> {
     let data = serde_json::to_vec(payload)?;
     if data.len() > MAX_DATA {
@@ -623,7 +666,7 @@ fn package(
         format_version: 1,
         sample_id: sample.id.to_string(),
         exported_at,
-        catalogue_version: catalogue::VERSION,
+        catalogue_version,
         files,
     })?;
     if manifest.len() > MAX_MANIFEST {

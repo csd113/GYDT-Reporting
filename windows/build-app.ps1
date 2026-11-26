@@ -32,10 +32,10 @@ foreach ($row in Get-Content -LiteralPath (Join-Path $root 'scripts/synthetic-in
 if ($seen.Count -ne $expected.Count) { throw 'The synthetic input list is incomplete.' }
 
 $triple = 'x86_64-pc-windows-msvc'
-$target = Join-Path $root 'target/gydt-windows-synthetic'
+$target = Join-Path $root 'target/gydt-windows-profile'
 Push-Location -LiteralPath $root
 try {
-    cargo build --release --locked --no-default-features --features public-demo --target $triple --bin gydt-results-compiler --target-dir $target
+    cargo build --release --locked --no-default-features --target $triple --bin gydt-results-compiler --target-dir $target
     if ($LASTEXITCODE -ne 0) { throw 'The Windows build failed.' }
 } finally {
     Pop-Location
@@ -57,7 +57,7 @@ try {
 $stage = Join-Path $directory ('.gydt-windows-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($stage) | Out-Null
 try {
-    $name = 'GYDT Sample Reporting Demo.exe'
+    $name = 'GYDT Sample Reporting.exe'
     $binary = Join-Path $stage $name
     $zip = Join-Path $stage 'application.zip'
     Copy-Item -LiteralPath $compiled -Destination $binary

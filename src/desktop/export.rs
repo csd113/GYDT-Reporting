@@ -7,8 +7,8 @@ use std::{
 
 use eframe::egui;
 use gydt_results_compiler::{
-    Catalogue, ConflictSnapshot, Contact, ExportRequest, PreparedExport, WriteError, WriteSuccess,
-    prepare_export,
+    ConflictSnapshot, Contact, ExportRequest, PreparedExport, Profile, WriteError, WriteSuccess,
+    prepare_profile_export,
 };
 use jiff::Timestamp;
 
@@ -98,10 +98,10 @@ impl Worker {
         mut drafts: Vec<Draft>,
         folder: PathBuf,
         history: Vec<History>,
-        catalogue: Arc<Catalogue>,
+        profile: Arc<Profile>,
     ) -> Result<()> {
         self.run(ctx, move || {
-            let result = prepare(&selection, &mut drafts, &folder, &history, &catalogue);
+            let result = prepare(&selection, &mut drafts, &folder, &history, &profile);
             Event::Prepared(selection, drafts, result)
         })
     }
@@ -111,10 +111,10 @@ impl Worker {
         ctx: &egui::Context,
         selection: Selection,
         plan: Box<Plan>,
-        catalogue: Arc<Catalogue>,
+        profile: Arc<Profile>,
     ) -> Result<()> {
         self.run(ctx, move || {
-            match check_existing(&plan, &catalogue) {
+            match check_existing(&plan, &profile) {
                 Ok(found) if found.is_empty() || selection.confirmed => {}
                 Ok(titles) => return Event::Repeat(selection, titles),
                 Err(error) => return Event::Blocked(error.to_string()),
@@ -163,7 +163,7 @@ pub(super) fn prepare(
     drafts: &mut [Draft],
     folder: &Path,
     history: &[History],
-    catalogue: &Catalogue,
+    profile: &Profile,
 ) -> Result<Prepared> {
     let recipient = if selection.wordpress_only {
         None
@@ -191,9 +191,9 @@ pub(super) fn prepare(
     let contact = recipient.map_or(Contact::WordPressOnly, |(channel, address)| {
         channel.contact(address)
     });
-    let output = prepare_export(
+    let output = prepare_profile_export(
         &mut samples,
-        catalogue,
+        profile,
         ExportRequest {
             contact,
             exported_at: Timestamp::now(),
@@ -210,21 +210,21 @@ pub(super) fn prepare(
         output,
         drafts: drafts.to_vec(),
     };
-    let needs_confirmation = check_existing(&plan, catalogue)?;
+    let needs_confirmation = check_existing(&plan, profile)?;
     Ok(Prepared {
         plan,
         needs_confirmation,
     })
 }
 
-fn check_existing(plan: &Plan, catalogue: &Catalogue) -> Result<Vec<String>> {
+fn check_existing(plan: &Plan, profile: &Profile) -> Result<Vec<String>> {
     let mut same_sample = Vec::new();
     for filename in plan.approved.filenames().filter(|name| {
         Path::new(name)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
     }) {
-        let Ok(existing) = archive::reopen(&plan.folder().join(filename), catalogue) else {
+        let Ok(existing) = archive::reopen(&plan.folder().join(filename), profile) else {
             continue;
         };
         for draft in &plan.drafts {

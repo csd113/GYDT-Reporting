@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use gydt_results_compiler::{Catalogue, live_textures};
+use gydt_results_compiler::{Catalogue, Profile, live_textures};
 use jiff::{Timestamp, tz::TimeZone};
 use serde::{
     Deserialize, Deserializer,
@@ -24,9 +24,6 @@ use super::model::{
 const MANIFEST: &str = "manifest.json";
 const DATA: &str = "test_data.json";
 const MAX_ZIP: u64 = 5 * 1024 * 1024;
-const CATALOGUE_VERSION: &str =
-    "sha256:501794d785f8719a385dda374e4a47d81792d19135f26e863f214d9d6c4b86f8";
-
 pub(super) fn read_file(path: &Path, max: u64, description: &str) -> Result<Vec<u8>> {
     if !fs::symlink_metadata(path)?.is_file() {
         return Err(format!("Choose a regular {description} file.").into());
@@ -47,14 +44,14 @@ pub(super) fn read_file(path: &Path, max: u64, description: &str) -> Result<Vec<
     Ok(bytes)
 }
 
-pub(super) fn reopen(path: &Path, catalogue: &Catalogue) -> Result<Draft> {
+pub(super) fn reopen(path: &Path, profile: &Profile) -> Result<Draft> {
     let bytes = read_file(path, MAX_ZIP, "ZIP")?;
     let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice()))
         .map_err(|_| invalid("This file is an invalid or unsupported sample ZIP."))?;
     validate_archive(&mut archive, &bytes)?;
     let members = read_members(&mut archive)?;
     let manifest: Manifest = serde_json::from_slice(member(&members, MANIFEST)?)?;
-    let id = manifest.validate(&members)?;
+    let id = manifest.validate(&members, profile.catalogue())?;
     let payload: Payload = serde_json::from_slice(member(&members, DATA)?)?;
     let stem = filename_stem(&payload.submission_number);
     let photo = members
@@ -70,7 +67,7 @@ pub(super) fn reopen(path: &Path, catalogue: &Catalogue) -> Result<Draft> {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(photo)
         })
         .transpose()?;
-    payload.draft(id, catalogue, photo)
+    payload.draft(id, profile, photo)
 }
 
 fn read_members<R: std::io::Read + std::io::Seek>(
@@ -335,11 +332,11 @@ fn unique_files<'de, D: Deserializer<'de>>(
 }
 
 impl Manifest {
-    fn validate(&self, members: &BTreeMap<String, Vec<u8>>) -> Result<Uuid> {
+    fn validate(&self, members: &BTreeMap<String, Vec<u8>>, catalogue: &Catalogue) -> Result<Uuid> {
         if self.format_version != 1 {
             return Err("This ZIP format version is unsupported.".into());
         }
-        if self.catalogue_version != CATALOGUE_VERSION {
+        if self.catalogue_version != catalogue.version() {
             return Err("This ZIP uses a different substance catalogue.".into());
         }
         let id: Uuid = self.sample_id.parse()?;
@@ -373,7 +370,7 @@ impl Manifest {
 struct Payload {
     submission_number: String,
     visit: u32,
-    site: Site,
+    site: String,
     analysis_date: String,
     collection_date: String,
     expected_substance: String,
@@ -419,7 +416,12 @@ fn optional_string<'de, D: Deserializer<'de>>(
 }
 
 impl Payload {
-    fn draft(self, id: Uuid, catalogue: &Catalogue, photo: Option<PhotoCopy>) -> Result<Draft> {
+    fn draft(self, id: Uuid, profile: &Profile, photo: Option<PhotoCopy>) -> Result<Draft> {
+        let catalogue = profile.catalogue();
+        let site = profile
+            .collection_site(&self.site)
+            .map(Site::from)
+            .ok_or("This ZIP uses a collection location outside the current profile.")?;
         self.validate_details()?;
         let expected = checked_substance(&self.expected_substance, catalogue)?;
         let rows = self
@@ -439,7 +441,7 @@ impl Payload {
             visit: self.visit.to_string(),
             suggested_visit: None,
             visit_claims: [0; 2],
-            site: self.site,
+            site,
             analysis_date: self.analysis_date,
             collection_date: self.collection_date,
             expected: Some(expected),

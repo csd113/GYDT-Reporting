@@ -16,7 +16,7 @@ use std::{
 };
 
 use eframe::egui::{self, Context};
-use gydt_results_compiler::{Catalogue, WriteError};
+use gydt_results_compiler::{Profile, WriteError};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
 use self::{
@@ -25,11 +25,7 @@ use self::{
     store::{Book, Record, Sequence, Settings, Store},
 };
 
-pub(super) const APP_NAME: &str = if cfg!(feature = "public-demo") {
-    "GYDT Sample Reporting Demo"
-} else {
-    "GYDT Sample Reporting"
-};
+pub(super) const APP_NAME: &str = "GYDT Sample Reporting";
 #[cfg(target_os = "macos")]
 const REPORTING_SIZE: [f32; 2] = [1136.0, 823.0];
 #[cfg(target_os = "macos")]
@@ -37,10 +33,12 @@ const SETTINGS_SIZE: [f32; 2] = [1136.0, 553.0];
 const SAVE_DELAY: Duration = Duration::from_millis(280);
 
 pub(super) fn run() -> Result<()> {
-    let store = Store::open()?;
-    let book = store.book()?;
+    let profile = Arc::new(Profile::load(&profile_directory(
+        &std::env::current_exe()?
+    )?)?);
+    let store = Store::open(&profile)?;
+    let book = store.book(&profile)?;
     let records = store.records()?;
-    let catalogue = Arc::new(Catalogue::bundled()?);
     let orbit = ui::orbit()?;
     let viewport = egui::ViewportBuilder::default()
         .with_drag_and_drop(true)
@@ -78,11 +76,30 @@ pub(super) fn run() -> Result<()> {
             #[cfg(target_os = "macos")]
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Light));
-            let app = App::new(&cc.egui_ctx, store, book, records, catalogue, &orbit);
+            let app = App::new(&cc.egui_ctx, store, book, records, profile, &orbit);
             Ok(Box::new(app))
         }),
     )
     .map_err(|error| error.to_string().into())
+}
+
+fn profile_directory(executable: &Path) -> Result<PathBuf> {
+    let parent = executable
+        .parent()
+        .ok_or("Can't locate the application folder.")?;
+    #[cfg(target_os = "macos")]
+    if parent.ends_with("Contents/MacOS")
+        && let Some(bundle) = parent.ancestors().nth(2)
+        && bundle
+            .extension()
+            .is_some_and(|extension| extension == "app")
+    {
+        return Ok(bundle
+            .parent()
+            .ok_or("Can't locate the application folder.")?
+            .join("GYDT Profile"));
+    }
+    Ok(parent.join("GYDT Profile"))
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -167,7 +184,7 @@ struct App {
     store: Store,
     book: Book,
     records: Vec<Record>,
-    catalogue: Arc<Catalogue>,
+    profile: Arc<Profile>,
     options: Vec<ui::SubstanceChoice>,
     orbit: egui::TextureHandle,
     sequence: Sequence,
@@ -191,7 +208,7 @@ impl App {
         store: Store,
         book: Book,
         records: Vec<Record>,
-        catalogue: Arc<Catalogue>,
+        profile: Arc<Profile>,
         orbit: &egui::IconData,
     ) -> Self {
         let pixels = egui::ColorImage::from_rgba_unmultiplied(
@@ -202,8 +219,8 @@ impl App {
             store,
             book,
             records,
-            options: ui::substances(&catalogue),
-            catalogue,
+            options: ui::substances(profile.catalogue()),
+            profile,
             orbit: ctx.load_texture("Indigo Orbit", pixels, egui::TextureOptions::LINEAR),
             sequence: Sequence::default(),
             tabs: Vec::new(),
@@ -546,7 +563,7 @@ impl App {
     }
 
     fn open_zip(&mut self, ctx: &Context, path: &Path) {
-        match archive::reopen(path, &self.catalogue) {
+        match archive::reopen(path, &self.profile) {
             Ok(draft) => {
                 self.dialog = None;
                 self.push_tab(ctx, draft, TabOrigin::Archive);
@@ -756,7 +773,7 @@ impl App {
             drafts,
             folder,
             self.book.history.clone(),
-            self.catalogue.clone(),
+            self.profile.clone(),
         ) {
             self.notice("Can't prepare export", error.to_string());
         }
@@ -773,7 +790,7 @@ impl App {
     fn write_plan(&mut self, ctx: &Context, selection: Selection, plan: Box<Plan>) {
         if let Err(error) = self
             .worker
-            .write(ctx, selection, plan, self.catalogue.clone())
+            .write(ctx, selection, plan, self.profile.clone())
         {
             self.notice("Can't start the export", error.to_string());
         }

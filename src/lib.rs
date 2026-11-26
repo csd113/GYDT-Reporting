@@ -6,6 +6,7 @@ mod files;
 mod model;
 mod package;
 mod photo;
+mod profile;
 
 use std::path::PathBuf;
 
@@ -17,8 +18,12 @@ pub use model::{
     AdverseEvents, CollectionSite, Consumption, DEFAULT_SITE_CODE, DetectedResult, Percentage,
     Sample, StripResult, Strips, Substance, live_textures, new_sample_id,
 };
-pub use package::{Contact, ExportHistoryEntry, ExportRequest, PreparedExport, prepare_export};
+pub use package::{
+    Contact, ExportHistoryEntry, ExportRequest, PreparedExport, prepare_export,
+    prepare_profile_export,
+};
 pub use photo::Photo;
+pub use profile::{Profile, SiteDefinition};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
@@ -33,7 +38,13 @@ pub enum ExportError {
         #[source]
         error: Box<Self>,
     },
-    #[error("The bundled substance catalogue does not match the approved snapshot")]
+    #[error("{0}")]
+    Profile(&'static str),
+    #[error(
+        "The profile file {0} is missing, unreadable, or invalid. Use the privately supplied profile."
+    )]
+    ProfileFile(&'static str),
+    #[error("The substance catalogue does not match the approved profile snapshot")]
     Catalogue,
     #[error("Sample number {0} has already been used")]
     DuplicateSubmission(String),

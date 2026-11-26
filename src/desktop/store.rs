@@ -1,13 +1,12 @@
 use std::{
     collections::HashMap,
-    ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, BufReader, BufWriter, Write as _},
     path::{Path, PathBuf},
     process::Command,
 };
 
-use gydt_results_compiler::{DEFAULT_SITE_CODE, ExportHistoryEntry};
+use gydt_results_compiler::{CollectionSite, ExportHistoryEntry, Profile};
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
@@ -15,24 +14,22 @@ use uuid::Uuid;
 use super::model::{Draft, Result, Site, parse_visit, valid_date};
 
 #[derive(Clone, Deserialize, Serialize)]
-#[serde(default)]
 pub(super) struct Settings {
     pub(super) site: Site,
     pub(super) codes: [String; 2],
     pub(super) folder: Option<PathBuf>,
 }
 
-impl Default for Settings {
-    fn default() -> Self {
+impl Settings {
+    fn for_profile(profile: &Profile) -> Self {
         Self {
             site: Site::default(),
-            codes: [DEFAULT_SITE_CODE.into(), DEFAULT_SITE_CODE.into()],
+            codes: [CollectionSite::ExampleEast, CollectionSite::ExampleWest]
+                .map(|site| profile.site(site).code().into()),
             folder: None,
         }
     }
-}
 
-impl Settings {
     pub(super) fn valid_code(code: &str) -> bool {
         code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit())
     }
@@ -62,9 +59,7 @@ impl Settings {
     pub(super) fn prefix(&self, site: Site, day: Date) -> String {
         format!(
             "3-{}-{day}-",
-            self.codes
-                .get(site.slot())
-                .map_or(DEFAULT_SITE_CODE, String::as_str)
+            self.codes.get(site.slot()).map_or("", String::as_str)
         )
     }
 }
@@ -98,15 +93,24 @@ impl History {
     }
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(default)]
+#[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Book {
     pub(super) settings: Settings,
+    #[serde(default)]
     pub(super) history: Vec<History>,
+    #[serde(default)]
     visits: HashMap<String, u32>,
 }
 
 impl Book {
+    pub(super) fn for_profile(profile: &Profile) -> Self {
+        Self {
+            settings: Settings::for_profile(profile),
+            history: Vec::new(),
+            visits: HashMap::new(),
+        }
+    }
+
     fn visit_key(site: Site, day: Date) -> String {
         format!("{}:{day}", site.slot())
     }
@@ -185,36 +189,15 @@ pub(super) struct Store {
 }
 
 impl Store {
-    pub(super) fn open() -> Result<Self> {
-        let root = Self::configured_root(
-            || std::env::var_os("GYDT_DATA_DIR"),
-            || directories::BaseDirs::new().map(|dirs| dirs.data_local_dir().to_owned()),
-        )?;
-        Self::open_at(root)
+    pub(super) fn open(profile: &Profile) -> Result<Self> {
+        let base = directories::BaseDirs::new()
+            .ok_or("Can't locate the local application data folder.")?;
+        Self::open_at(Self::profile_root(base.data_local_dir(), profile))
     }
 
-    fn configured_root(
-        staff_override: impl FnOnce() -> Option<OsString>,
-        base_directory: impl FnOnce() -> Option<PathBuf>,
-    ) -> Result<PathBuf> {
-        if !cfg!(feature = "public-demo")
-            && let Some(path) = staff_override()
-        {
-            let path = PathBuf::from(path);
-            if !path.is_absolute() {
-                return Err("GYDT_DATA_DIR must be an absolute path.".into());
-            }
-            return Ok(path);
-        }
-
-        let namespace = if cfg!(feature = "public-demo") {
-            "GYDT Sample Reporting Demo"
-        } else {
-            "GYDT Sample Reporting"
-        };
-        Ok(base_directory()
-            .ok_or("Can't locate the local application data folder.")?
-            .join(namespace))
+    pub(super) fn profile_root(base: &Path, profile: &Profile) -> PathBuf {
+        base.join("GYDT Sample Reporting Profiles")
+            .join(profile.storage_key())
     }
 
     pub(super) fn open_at(root: PathBuf) -> Result<Self> {
@@ -264,9 +247,9 @@ impl Store {
         Ok(())
     }
 
-    pub(super) fn book(&self) -> Result<Book> {
+    pub(super) fn book(&self, profile: &Profile) -> Result<Book> {
         let path = self.root.join("book.json");
-        let book = load::<Book>(&path)?.unwrap_or_default();
+        let book = load::<Book>(&path)?.unwrap_or_else(|| Book::for_profile(profile));
         if !book
             .settings
             .codes
@@ -439,67 +422,4 @@ fn split_title(title: &str) -> Option<(&str, u64)> {
     }
     let value: u64 = serial.parse().ok()?;
     (value > 0).then(|| (title.get(..=prefix.len()).unwrap_or_default(), value))
-}
-
-#[cfg(test)]
-mod root_tests {
-    use super::*;
-
-    #[cfg(feature = "public-demo")]
-    #[test]
-    fn demo_ignores_staff_override_and_opens_a_separate_store() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let base = tmp.path().join("app-data");
-        let default_staff = base.join("GYDT Sample Reporting");
-        let inherited_staff = tmp.path().join("explicit-staff-data");
-        let sentinel = b"malformed synthetic staff book";
-        for staff in [&default_staff, &inherited_staff] {
-            fs::create_dir_all(staff)?;
-            fs::write(staff.join("book.json"), sentinel)?;
-        }
-
-        for staff_override in [None, Some(inherited_staff.into_os_string())] {
-            let consulted = std::cell::Cell::new(false);
-            let root = Store::configured_root(
-                || {
-                    consulted.set(true);
-                    staff_override
-                },
-                || Some(base.clone()),
-            )?;
-            assert!(!consulted.get());
-            assert_eq!(root, base.join("GYDT Sample Reporting Demo"));
-            let store = Store::open_at(root)?;
-            let book = store.book()?;
-            assert!(store.records()?.is_empty());
-            store.save_book(&book)?;
-        }
-
-        for staff in [default_staff, tmp.path().join("explicit-staff-data")] {
-            assert_eq!(fs::read(staff.join("book.json"))?, sentinel);
-            assert_eq!(fs::read_dir(staff)?.count(), 1);
-        }
-        Ok(())
-    }
-
-    #[cfg(not(feature = "public-demo"))]
-    #[test]
-    fn ordinary_build_preserves_staff_override_and_default() -> Result<()> {
-        let tmp = tempfile::tempdir()?;
-        let base = tmp.path().join("app-data");
-        let staff = tmp.path().join("staff");
-        assert_eq!(
-            Store::configured_root(|| Some(staff.clone().into_os_string()), || None)?,
-            staff
-        );
-        assert!(
-            Store::configured_root(|| Some(OsString::from("relative")), || Some(base.clone()),)
-                .is_err()
-        );
-        assert_eq!(
-            Store::configured_root(|| None, || Some(base.clone()))?,
-            base.join("GYDT Sample Reporting")
-        );
-        Ok(())
-    }
 }
