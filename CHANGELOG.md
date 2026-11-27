@@ -1,6 +1,6 @@
 # Release notes
 
-## 1.0.4 (unreleased)
+## 1.0.4
 
 ### Desktop app
 
@@ -46,7 +46,8 @@
 - Retired the obsolete demo and its importer package. Production package and
   desktop regression checks still use purpose-made synthetic data.
 - Require matching macOS, Windows, and production importer downloads and their
-  SHA-256 checksums for every release.
+  SHA-256 checksums for every release. Branch rollover waits until all three
+  packages have been verified after publication.
 
 ## 1.0.3
 
