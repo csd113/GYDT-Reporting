@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.0.3
+
+- Put exact substance names first in both pickers while keeping dash-insensitive search.
+- Show multiple results and a scroll cue in compact windows.
+- Keep the picker open when text is pasted and reset the list to the first match.
+- The WordPress importer is unchanged.
+
 ## 1.0.2
 
 - Build the approved profile into the app, so it opens without a separate folder.

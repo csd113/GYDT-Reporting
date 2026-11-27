@@ -130,16 +130,16 @@ pub(super) struct SubstanceChoice {
     value: Selection,
     label: String,
     official: SearchKeys,
-    aliases: SearchKeys,
+    aliases: Vec<SearchKeys>,
 }
 
 impl SubstanceChoice {
-    fn new(value: Selection, label: String, official: &str, aliases: &str) -> Self {
+    fn new(value: Selection, label: String, official: &str, aliases: &[&str]) -> Self {
         Self {
             value,
             label,
             official: SearchKeys::new(official),
-            aliases: SearchKeys::new(aliases),
+            aliases: aliases.iter().map(|alias| SearchKeys::new(alias)).collect(),
         }
     }
 
@@ -148,15 +148,27 @@ impl SubstanceChoice {
             Some(0)
         } else if self.official.dash_matches(query, |field, key| field == key) {
             Some(1)
-        } else if self.aliases.plain.contains(&query.plain) {
+        } else if self.aliases.iter().any(|alias| {
+            alias.plain == query.plain || alias.dash_matches(query, |field, key| field == key)
+        }) {
             Some(2)
-        } else if self
-            .aliases
-            .dash_matches(query, |field, key| field.contains(key))
-        {
-            Some(3)
         } else {
-            None
+            std::iter::once(&self.official)
+                .chain(&self.aliases)
+                .filter_map(|field| {
+                    if field.plain.starts_with(&query.plain)
+                        || field.dash_matches(query, |text, key| text.starts_with(key))
+                    {
+                        Some(3)
+                    } else if field.plain.contains(&query.plain)
+                        || field.dash_matches(query, |text, key| text.contains(key))
+                    {
+                        Some(4)
+                    } else {
+                        None
+                    }
+                })
+                .min()
         }
     }
 }
@@ -246,18 +258,18 @@ pub(super) fn substances(catalogue: &Catalogue) -> Vec<SubstanceChoice> {
                 Selection::Catalogue(record.id),
                 label,
                 &record.label,
-                &format!("{} {} {}", record.label, record.slug, record.id),
+                &[&record.slug, &record.id.to_string()],
             )
         })
         .collect();
     choices.sort_by_cached_key(|choice| choice.label.to_lowercase());
     choices.insert(
         0,
-        SubstanceChoice::new(Selection::Other, "Other".into(), "Other", "Other"),
+        SubstanceChoice::new(Selection::Other, "Other".into(), "Other", &[]),
     );
     choices.insert(
         0,
-        SubstanceChoice::new(Selection::Unknown, "Unknown".into(), "Unknown", "Unknown"),
+        SubstanceChoice::new(Selection::Unknown, "Unknown".into(), "Unknown", &[]),
     );
     choices
 }
@@ -1503,8 +1515,10 @@ fn substance(
         .find(|choice| Some(choice.value) == *value)
         .map_or("", |choice| choice.label.as_str());
     let search_id = ui.make_persistent_id((name, "search"));
-    let response = combo(ui, name, selected, width, error, |ui| {
-        substance_menu(ui, search_id, value, options);
+    let response = combo_control(ui, name, selected, width, error, |ui, button| {
+        substance_popup(ui, button, |ui, height| {
+            substance_menu(ui, search_id, value, options, height);
+        });
     });
     response.on_hover_text(name)
 }
@@ -1514,6 +1528,7 @@ fn substance_menu(
     search_id: Id,
     value: &mut Option<Selection>,
     options: &[SubstanceChoice],
+    height: f32,
 ) {
     let frame = ui.ctx().cumulative_frame_nr();
     let mut search = ui
@@ -1529,15 +1544,25 @@ fn substance_menu(
     let down = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::ArrowDown));
     let up = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::ArrowUp));
     let enter = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter));
-    let field = ui.add(
-        TextEdit::singleline(&mut search.query)
-            .id(search_id)
-            .hint_text("Search substances"),
-    );
+    let top = ui.cursor().top();
+    // TextEdit requests cursor scrolling on edits. This popup is drawn inside
+    // the sample form's scroll pass, so consume its request here instead of
+    // letting it scroll the form and move the anchor out of view.
+    let field = ScrollArea::neither()
+        .id_salt((search_id, "search-field"))
+        .show(ui, |ui| {
+            ui.add(
+                TextEdit::singleline(&mut search.query)
+                    .id(search_id)
+                    .hint_text("Search substances"),
+            )
+        })
+        .inner;
     if opened {
         field.request_focus();
     }
-    if field.changed() {
+    let reset = opened || field.changed();
+    if reset {
         search.index = 0;
     }
     let query = search.query.trim();
@@ -1566,13 +1591,39 @@ fn substance_menu(
         ui.close();
     }
     let keyboard = down || up || !query.is_empty();
-    ScrollArea::vertical().max_height(248.0).show(ui, |ui| {
+    let row_height = ui.spacing().interact_size.y.min(26.0);
+    let spacing = ui.spacing().item_spacing.y.min(3.0);
+    let row_stride = row_height + spacing;
+    // Reserve actual space for the input and a one-line overflow cue. A
+    // conservative fixed deduction cost a full row in the smallest window.
+    let chrome = ui.cursor().top() - top
+        + ui.text_style_height(&egui::TextStyle::Small)
+        + ui.spacing().item_spacing.y;
+    let list_height = (height - chrome).max(row_stride);
+    let visible_rows = (1_u16..=6)
+        .rev()
+        .find(|&rows| row_stride * f32::from(rows) <= list_height)
+        .unwrap_or(1);
+    if choices.len() > usize::from(visible_rows) {
+        hint(ui, &format!("{} results · scroll", choices.len()));
+    }
+    let mut scroll = ScrollArea::vertical()
+        .id_salt((search_id, "results"))
+        .max_height(row_stride * f32::from(visible_rows));
+    if reset {
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    scroll.show(ui, |ui| {
+        ui.spacing_mut().interact_size.y = row_height;
+        ui.spacing_mut().item_spacing.y = spacing;
         for (index, (choice, label)) in choices.iter().enumerate() {
             let active = keyboard && search.index == index;
-            let response =
-                ui.add(egui::Button::selectable(active || *value == *choice, *label).truncate());
+            let response = ui.add_sized(
+                [ui.available_width(), row_height],
+                egui::Button::selectable(active || *value == *choice, *label).truncate(),
+            );
             if active && (down || up) {
-                response.scroll_to_me(Some(Align::Center));
+                response.scroll_to_me(None);
             }
             if response.clicked() {
                 *value = *choice;
@@ -1794,6 +1845,19 @@ fn combo(
     error: bool,
     menu: impl FnOnce(&mut Ui),
 ) -> Response {
+    combo_control(ui, id, current, width, error, |ui, button| {
+        combo_popup(ui, button, menu);
+    })
+}
+
+fn combo_control(
+    ui: &mut Ui,
+    id: impl Hash,
+    current: &str,
+    width: f32,
+    error: bool,
+    popup: impl FnOnce(&Ui, &Response),
+) -> Response {
     scoped_error(ui, error, |ui| {
         let response = ui
             .push_id(id, |ui| {
@@ -1819,9 +1883,47 @@ fn combo(
             Stroke::new(1.3_f32, INK),
         ));
         focus_ring(ui, &response, 6);
-        combo_popup(ui, &response, menu);
+        popup(ui, &response);
         response
     })
+}
+
+fn substance_popup(ui: &Ui, button: &Response, menu: impl FnOnce(&mut Ui, f32)) {
+    let mut popup = Popup::menu(button)
+        .width(button.rect.width())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let form_viewport = ui
+        .stack()
+        .iter()
+        .find_map(|frame| frame.tags().get_downcast::<Rect>(FORM_VIEWPORT).copied());
+    if !button.enabled()
+        || form_viewport.is_some_and(|viewport| !viewport.contains_rect(button.rect))
+    {
+        Popup::close_id(ui.ctx(), popup.get_id());
+        return;
+    }
+    // The popup can extend past the scrollable form, but not past the app window.
+    let window = ui.ctx().content_rect();
+    let above = button.rect.top() - window.top();
+    let below = window.bottom() - button.rect.bottom();
+    let opens_below = below >= 226.0 || below >= above;
+    let height = if opens_below { below } else { above } - 20.0;
+    popup = popup
+        .align(if opens_below {
+            RectAlign::BOTTOM_START
+        } else {
+            RectAlign::TOP_START
+        })
+        .align_alternatives(&[])
+        .gap(3.0)
+        .frame(Frame::popup(ui.style()).shadow(egui::Shadow::NONE));
+    popup.show(|ui| {
+        ui.set_min_width(ui.available_width());
+        // An upward popup starts with its previous height. Give the list the full
+        // bounded budget so it can grow again after a short search.
+        ui.set_max_height(height.max(0.0));
+        menu(ui, height);
+    });
 }
 
 fn combo_popup(ui: &Ui, button: &Response, menu: impl FnOnce(&mut Ui)) {
@@ -2548,10 +2650,15 @@ fn path_label(ui: &mut Ui, path: &Path) {
 
 #[cfg(test)]
 mod substance_search_tests {
-    use super::{Selection, SubstanceChoice, search_substances};
+    use super::{Profile, Selection, SubstanceChoice, search_substances, substances};
 
     fn choice(id: u64, label: &str, alias: &str) -> SubstanceChoice {
-        SubstanceChoice::new(Selection::Catalogue(id), label.into(), label, alias)
+        SubstanceChoice::new(
+            Selection::Catalogue(id),
+            label.into(),
+            label,
+            &alias.split_whitespace().collect::<Vec<_>>(),
+        )
     }
 
     #[test]
@@ -2615,5 +2722,98 @@ mod substance_search_tests {
             hits.get(1)
                 .is_some_and(|hit| hit.value == Selection::Catalogue(1))
         );
+    }
+    #[test]
+    fn bundled_catalogue_prioritizes_real_names_and_prefixes() -> super::Result<()> {
+        let profile = Profile::embedded()?;
+        let options = substances(profile.catalogue());
+        for (query, expected) in [
+            ("fEnTaNyL", "Fentanyl"),
+            ("4mmc", "4-MMC"),
+            ("4-MMC", "4-MMC"),
+            ("Ketamine", "Ketamine"),
+        ] {
+            let first = search_substances(&options, query);
+            assert_eq!(first.first().map(|hit| hit.label.as_str()), Some(expected));
+            let again = search_substances(&options, query);
+            assert!(
+                first
+                    .iter()
+                    .map(|c| c.value)
+                    .eq(again.iter().map(|c| c.value))
+            );
+        }
+        let hits = search_substances(&options, "fenta");
+        let before = hits.iter().position(|hit| hit.label == "Fentanyl");
+        let after = hits.iter().position(|hit| hit.label == "Furanylfentanyl");
+        assert!(matches!((before, after), (Some(prefix), Some(substring)) if prefix < substring));
+        Ok(())
+    }
+
+    #[test]
+    fn exact_aliases_beat_prefixes_but_never_the_official_name() {
+        let options = [
+            choice(1, "Example wider", "example-wider"),
+            choice(2, "Other title", "example"),
+            choice(3, "Example", "example-main"),
+            choice(4, "Example also", "example-also"),
+        ];
+        let ids: Vec<_> = search_substances(&options, "EXAMPLE")
+            .iter()
+            .map(|c| c.value)
+            .collect();
+        assert_eq!(ids, [3, 2, 1, 4].map(Selection::Catalogue));
+    }
+
+    #[test]
+    fn pasting_in_search_does_not_scroll_its_form() {
+        use eframe::egui::{Area, Context, Event, Id, RawInput, ScrollArea, pos2};
+
+        let ctx = Context::default();
+        let search_id = Id::new("picker-regression-search");
+        let options = [
+            choice(1, "Ketamine", "ketamine"),
+            choice(2, "Fentanyl", "fentanyl"),
+        ];
+        let mut value = None;
+        let mut offset = 0.0;
+        for (frame, events) in [vec![], vec![Event::Paste("Fentanyl".into())], vec![]]
+            .into_iter()
+            .enumerate()
+        {
+            let _ = ctx.run_ui(
+                RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.add_space(180.0);
+                    let mut form = ScrollArea::vertical().max_height(100.0).animated(false);
+                    if frame == 0 {
+                        form = form.vertical_scroll_offset(160.0);
+                    }
+                    offset = form
+                        .show(ui, |ui| {
+                            ui.add_space(480.0);
+                            Area::new(Id::new("opposite-side-popup"))
+                                .fixed_pos(pos2(8.0, 16.0))
+                                .show(ui.ctx(), |ui| {
+                                    ui.set_width(200.0);
+                                    super::substance_menu(
+                                        ui, search_id, &mut value, &options, 130.0,
+                                    );
+                                });
+                        })
+                        .state
+                        .offset
+                        .y;
+                },
+            );
+        }
+        assert!(
+            ctx.data_mut(|data| data.get_temp::<super::Search>(search_id))
+                .is_some_and(|s| s.query == "Fentanyl")
+        );
+        assert!((offset - 160.0).abs() < 0.5, "form moved to {offset}");
     }
 }
