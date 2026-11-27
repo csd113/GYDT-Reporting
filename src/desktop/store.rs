@@ -19,6 +19,8 @@ pub(super) struct Settings {
     pub(super) codes: [String; 2],
     pub(super) folder: Option<PathBuf>,
     #[serde(default)]
+    pub(super) folder_day: Option<String>,
+    #[serde(default)]
     pub(super) attach_opus: bool,
     #[serde(default)]
     pub(super) opus_folder: Option<PathBuf>,
@@ -31,9 +33,28 @@ impl Settings {
             codes: [CollectionSite::ExampleEast, CollectionSite::ExampleWest]
                 .map(|site| profile.site(site).code().into()),
             folder: None,
+            folder_day: None,
             attach_opus: false,
             opus_folder: None,
         }
+    }
+
+    pub(super) fn today_folder(&self, day: Date) -> Option<&Path> {
+        if self.folder_day.as_deref() != Some(day.to_string().as_str()) {
+            return None;
+        }
+        self.folder
+            .as_deref()
+            .filter(|folder| fs::read_dir(folder).is_ok())
+    }
+
+    pub(super) fn select_folder(&mut self, folder: PathBuf, opened: Date, finished: Date) -> bool {
+        if opened != finished || fs::read_dir(&folder).is_err() {
+            return false;
+        }
+        self.folder = Some(folder);
+        self.folder_day = Some(finished.to_string());
+        true
     }
 
     pub(super) fn valid_code(code: &str) -> bool {
@@ -46,8 +67,9 @@ impl Settings {
         if edited.site != original.site {
             next.site = edited.site;
         }
-        if edited.folder != original.folder {
+        if edited.folder != original.folder || edited.folder_day != original.folder_day {
             next.folder.clone_from(&edited.folder);
+            next.folder_day.clone_from(&edited.folder_day);
         }
         if edited.attach_opus != original.attach_opus {
             next.attach_opus = edited.attach_opus;

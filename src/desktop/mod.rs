@@ -177,6 +177,8 @@ struct App {
     status: Option<String>,
     save_error: Option<String>,
     history_pending: bool,
+    folder_prompt_day: Option<Date>,
+    deferred_photo_prompt: bool,
     #[cfg(target_os = "windows")]
     last_work_area: Option<[i32; 4]>,
 }
@@ -212,16 +214,58 @@ impl App {
             status: None,
             save_error: None,
             history_pending: false,
+            folder_prompt_day: None,
+            deferred_photo_prompt: false,
             #[cfg(target_os = "windows")]
             last_work_area: None,
         };
         app.rescan();
         app.new_tab(ctx, false);
+        if let Ok(day) = analysis_day()
+            && app.book.settings.today_folder(day).is_none()
+            && matches!(app.dialog, Some(Dialog::PhotoPrompt))
+        {
+            app.deferred_photo_prompt = true;
+            app.ask_for_daily_folder(day);
+        }
         app
     }
 
+    fn ask_for_daily_folder(&mut self, day: Date) {
+        self.folder_prompt_day = Some(day);
+        self.dialog = Some(Dialog::ExportFolder);
+    }
+
+    fn tick_daily_folder(&mut self, ctx: &Context) {
+        let now = Timestamp::now();
+        let Ok(zone) = TimeZone::get("America/Vancouver") else {
+            return;
+        };
+        let today = now.to_zoned(zone.clone()).date();
+        if let Ok(tomorrow) = today.tomorrow()
+            && let Ok(midnight) = tomorrow.to_zoned(zone)
+        {
+            let until = midnight.timestamp().as_second() - now.as_second();
+            // Recheck sooner occasionally to cover system clock corrections.
+            let seconds = u64::try_from(until).unwrap_or(1).clamp(1, 60);
+            ctx.request_repaint_after(Duration::from_secs(seconds));
+        }
+        if self.dialog.is_none() && !self.show_settings && !self.worker.busy() {
+            if self.folder_prompt_day != Some(today)
+                && self.book.settings.today_folder(today).is_none()
+            {
+                self.ask_for_daily_folder(today);
+            } else if std::mem::take(&mut self.deferred_photo_prompt) && self.active.is_some() {
+                self.dialog = Some(Dialog::PhotoPrompt);
+            }
+        }
+    }
+
     fn rescan(&mut self) {
-        self.sequence.scan(self.book.settings.folder.as_deref());
+        let today = analysis_day()
+            .ok()
+            .and_then(|day| self.book.settings.today_folder(day));
+        self.sequence.scan(today);
     }
 
     fn new_tab(&mut self, ctx: &Context, same_visit: bool) {
@@ -511,31 +555,39 @@ impl App {
     }
 
     fn choose_folder(&mut self, in_settings: bool) {
+        let Ok(opened) = analysis_day() else {
+            return;
+        };
         let settings = self
             .settings
             .as_ref()
             .filter(|_| in_settings)
             .map_or(&self.book.settings, |settings| &settings.draft);
-        let mut dialog = rfd::FileDialog::new().set_title("Choose export folder");
+        let mut dialog = rfd::FileDialog::new().set_title("Choose today’s export folder");
         if let Some(parent) = settings.folder.as_deref().and_then(nearest_directory) {
             dialog = dialog.set_directory(parent);
         }
         let Some(folder) = dialog.pick_folder() else {
             return;
         };
-        if !folder.is_dir() {
-            self.notice(
-                "Export folder unavailable",
-                "Choose an existing export folder.",
-            );
-        } else if in_settings {
-            if let Some(settings) = &mut self.settings {
-                settings.draft.folder = Some(folder);
+        let Ok(finished) = analysis_day() else {
+            return;
+        };
+        if opened != finished {
+            self.ask_for_daily_folder(finished);
+            return;
+        }
+        if in_settings {
+            if let Some(settings) = &mut self.settings
+                && !settings.draft.select_folder(folder, opened, finished)
+            {
+                settings.error = Some("Choose an existing readable export folder.".into());
             }
         } else {
             let mut next = self.book.settings.clone();
-            next.folder = Some(folder);
-            if let Err(error) = self.apply_settings(next) {
+            if !next.select_folder(folder, opened, finished) {
+                self.ask_for_daily_folder(finished);
+            } else if let Err(error) = self.apply_settings(next) {
                 self.notice("Can't save the export folder", error.to_string());
             }
         }
@@ -729,14 +781,15 @@ impl App {
             self.notice("Can't save the sample", error.to_string());
             return;
         }
-        let Some(folder) = self
-            .book
-            .settings
-            .folder
-            .clone()
-            .filter(|folder| std::fs::read_dir(folder).is_ok())
-        else {
-            self.dialog = Some(Dialog::ExportFolder);
+        let Ok(day) = analysis_day() else {
+            self.notice(
+                "Can’t check today’s date",
+                "Check the computer clock and try Export again.",
+            );
+            return;
+        };
+        let Some(folder) = self.book.settings.today_folder(day).map(Path::to_owned) else {
+            self.ask_for_daily_folder(day);
             return;
         };
         self.rescan();
@@ -800,6 +853,22 @@ impl App {
     }
 
     fn write_plan(&mut self, ctx: &Context, selection: Selection, plan: Box<Plan>) {
+        let Ok(day) = analysis_day() else {
+            self.notice(
+                "Can’t check today’s date",
+                "Check the computer clock and try Export again.",
+            );
+            return;
+        };
+        if self
+            .book
+            .settings
+            .today_folder(day)
+            .is_none_or(|folder| !same_file::is_same_file(folder, plan.folder()).unwrap_or(false))
+        {
+            self.ask_for_daily_folder(day);
+            return;
+        }
         if let Err(error) = self
             .worker
             .write(ctx, selection, plan, self.profile.clone())
@@ -898,6 +967,7 @@ impl eframe::App for App {
             self.handle_export(ctx, event);
         }
         self.dropped(ctx);
+        self.tick_daily_folder(ctx);
         if self.show_settings
             && self.dialog.is_none()
             && !egui::Popup::is_any_open(ctx)

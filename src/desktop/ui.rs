@@ -2478,8 +2478,8 @@ impl App {
     fn dialog_contents(&self, ui: &mut Ui, dialog: &mut Dialog) -> ModalAction {
         match dialog {
             Dialog::ExportFolder => {
-                modal_title(ui, "Export folder unavailable");
-                ui.label("Choose an existing folder for this export. Your sample will stay open.");
+                modal_title(ui, "Choose today’s export folder");
+                ui.label("Select where to save today’s exports. Your prior folder won’t be used unless you pick it again. You can keep entering samples if you cancel.");
                 dialog_buttons(ui, "Cancel", "Choose folder…", ModalAction::Folder)
             }
             Dialog::PhotoPrompt => {

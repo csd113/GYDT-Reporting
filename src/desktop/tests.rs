@@ -1049,3 +1049,31 @@ fn stage_opus_wordpress_qa() -> Result<()> {
     assert_eq!(prepared.plan.write()?.written.len(), 2);
     Ok(())
 }
+
+#[test]
+fn old_folder_requires_same_day_explicit_selection() -> Result<()> {
+    let profile = fixture_profile()?;
+    let data = tempfile::tempdir()?;
+    let output = tempfile::tempdir()?;
+    let store = super::store::Store::open_at(data.path().to_owned())?;
+    let mut original = store.book(&profile)?;
+    let yesterday = "2026-11-26".parse()?;
+    let today = "2026-11-27".parse()?;
+    let tomorrow = "2026-11-28".parse()?;
+    original.settings.folder = Some(output.path().to_owned());
+    store.save_book(&original)?;
+    let mut settings = store.book(&profile)?.settings;
+    assert!(settings.today_folder(today).is_none());
+    assert!(!settings.select_folder(output.path().to_owned(), yesterday, today));
+    assert!(settings.today_folder(today).is_none());
+    assert!(settings.select_folder(output.path().to_owned(), today, today));
+    original.settings = settings;
+    store.save_book(&original)?;
+    let saved = store.book(&profile)?;
+    assert_eq!(saved.settings.today_folder(today), Some(output.path()));
+    assert!(saved.settings.today_folder(tomorrow).is_none());
+    assert_eq!(fs::read_dir(output.path())?.count(), 0);
+    output.close()?;
+    assert!(saved.settings.today_folder(today).is_none());
+    Ok(())
+}
