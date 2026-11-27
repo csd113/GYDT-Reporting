@@ -631,12 +631,7 @@ fn two_samples_export_ordered_zips_and_separate_contact_drafts() -> TestResult {
     assert!(html.contains("Alpha &amp; synthetic note"));
     assert!(html.contains("Code word: CEDAR &nbsp;0002<br>"));
     verify_approved_html(&html)?;
-    let html_text = html
-        .replace("<br>", "\n")
-        .replace("</p><p>", "\n\n")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&");
-    verify_draft(&html_text, &generated)?;
+    verify_draft(&visible_html_text(&html), &generated)?;
 
     let sms_dir = tempdir()?;
     let mut samples = [first, second];
@@ -650,8 +645,74 @@ fn two_samples_export_ordered_zips_and_separate_contact_drafts() -> TestResult {
     verify_zip(sms_dir.path(), first, Some(("JpEg", &original)))?;
     verify_zip(sms_dir.path(), second, None)?;
     let sms = fs::read_to_string(sms_dir.path().join(format!("{FIRST}.txt")))?;
-    verify_draft(&sms, &generated)?;
-    assert!(!sms.contains("6045550100"));
+    let sms_body = sms
+        .strip_prefix("To: 6045550100\n\n")
+        .ok_or("Missing SMS header")?;
+    verify_draft(sms_body, &generated)?;
+    assert!(!sms_body.contains("6045550100"));
+    verify_no_contact_in_zip(sms_dir.path())?;
+    Ok(())
+}
+
+fn visible_html_text(html: &str) -> String {
+    html.replace("<br>", "\n")
+        .replace("</p><p>", "\n\n")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+}
+
+fn verify_no_contact_in_zip(folder: &Path) -> TestResult {
+    for sample in [FIRST, SECOND] {
+        let mut archive = ZipArchive::new(fs::File::open(folder.join(format!("{sample}.zip")))?)?;
+        for name in ["manifest.json", "test_data.json"] {
+            let mut data = String::new();
+            archive.by_name(name)?.read_to_string(&mut data)?;
+            assert!(!data.contains("6045550100"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn single_email_and_sms_omit_only_the_report_heading() -> TestResult {
+    let catalogue = Catalogue::bundled()?;
+    let inputs = tempdir()?;
+    let [mut first, _] = pair(inputs.path())?;
+    let address = "synthetic@example.invalid";
+    let one = tempdir()?;
+    let phone = "+1 (604) 555-0100";
+    let text = prepare_export(
+        std::slice::from_mut(&mut first),
+        &catalogue,
+        request(Contact::Text(phone))?,
+    )?;
+    text.write(one.path(), None)?;
+    let text = fs::read_to_string(one.path().join(format!("{FIRST}.txt")))?;
+    let expected_header = format!("To: {phone}\n\nHello.");
+    assert!(text.starts_with(&expected_header));
+    assert!(!text.contains("Sample 1") && !text.contains(FIRST));
+    let email_folder = tempdir()?;
+    let single_email = prepare_export(
+        std::slice::from_mut(&mut first),
+        &catalogue,
+        request(Contact::Email(address))?,
+    )?;
+    single_email.write(email_folder.path(), None)?;
+    let eml = fs::read_to_string(email_folder.path().join(format!("{FIRST}.eml")))?;
+    for part in ["plain", "html"] {
+        let body = decoded_email(&eml, part)?;
+        assert!(!body.contains("Sample 1") && !body.contains(FIRST) && !body.contains("<ol>"));
+        assert!(body.contains("Code word: "));
+    }
+    assert!(
+        prepare_export(
+            std::slice::from_mut(&mut first),
+            &catalogue,
+            request(Contact::Text("6045550100\nTo: 6045550199"))?
+        )
+        .is_err()
+    );
+
     Ok(())
 }
 
@@ -936,7 +997,7 @@ fn a_new_contact_file_conflict_preserves_both_outputs() -> TestResult {
     assert_eq!(fs::read_to_string(&zip)?, "original ZIP");
     assert_eq!(fs::read_to_string(&draft)?, "original draft");
     assert_eq!(plan.write(folder, Some(&conflicts))?.written.len(), 2);
-    assert!(fs::read_to_string(draft)?.contains("Sample 1"));
+    assert!(fs::read_to_string(draft)?.contains("Code word: "));
     assert_eq!(ZipArchive::new(File::open(zip)?)?.len(), 2);
     assert_eq!(fs::read_dir(folder)?.count(), 2);
     Ok(())

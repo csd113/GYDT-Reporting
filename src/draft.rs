@@ -48,9 +48,27 @@ pub(crate) fn validate_contact(contact: Contact<'_>) -> Result<Contact<'_>, Expo
                 "Enter one email address without a display name.",
             )),
         },
-        Contact::Text(number) if number.trim().is_empty() => Ok(Contact::WordPressOnly),
-        other => Ok(other),
+        Contact::Text(number) => match number.trim() {
+            "" => Ok(Contact::WordPressOnly),
+            trimmed if valid_phone(number) => Ok(Contact::Text(trimmed)),
+            _ => Err(invalid(
+                "phone number",
+                "Enter one phone number without line breaks.",
+            )),
+        },
+        Contact::WordPressOnly => Ok(Contact::WordPressOnly),
     }
+}
+
+fn valid_phone(number: &str) -> bool {
+    let trimmed = number.trim();
+    let body = trimmed.strip_prefix('+').unwrap_or(trimmed);
+    number.len() <= 40
+        && !number.chars().any(char::is_control)
+        && (7..=15).contains(&body.bytes().filter(u8::is_ascii_digit).count())
+        && body
+            .chars()
+            .all(|c| c.is_ascii_digit() || " -().\u{a0}\u{202f}".contains(c))
 }
 
 fn mailbox(address: &str) -> bool {
@@ -87,15 +105,17 @@ pub(crate) fn make(
         samples
             .iter()
             .enumerate()
-            .map(|(index, sample)| sample_summary(index + 1, sample, catalogue))
+            .map(|(index, sample)| {
+                sample_summary((samples.len() > 1).then_some(index + 1), sample, catalogue)
+            })
             .collect::<Result<Vec<_>, _>>()
     };
 
     let (extension, bytes) = match contact {
         Contact::WordPressOnly => return Ok(None),
-        Contact::Text(_) => {
+        Contact::Text(number) => {
             let body = sample_body(introduction(&templates.sms)?, &summarize()?);
-            ("txt", body.into_bytes())
+            ("txt", format!("To: {number}\n\n{body}").into_bytes())
         }
         Contact::Email(address) => {
             let summaries = summarize()?;
@@ -145,7 +165,7 @@ fn sample_body(intro: &str, summaries: &[String]) -> String {
 }
 
 fn sample_summary(
-    number: usize,
+    number: Option<usize>,
     sample: &Payload<'_>,
     catalogue: &Catalogue,
 ) -> Result<String, ExportError> {
@@ -155,10 +175,12 @@ fn sample_summary(
         .iter()
         .map(|row| describe(row, catalogue))
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(number) = number {
+        let _ = writeln!(body, "Sample {number}");
+    }
     let _ = writeln!(
         body,
-        "Sample {}\nCode word: {}\nDetected substances: {}",
-        number,
+        "Code word: {}\nDetected substances: {}",
         sample.client,
         detected.join(", ")
     );
@@ -205,7 +227,12 @@ fn html_body(template: &str, summaries: &[String]) -> Result<String, ExportError
     let (intro, rest) = html.split_once("<ol>").ok_or(ExportError::Template)?;
     let (greeting, after_example) = html_example(intro)?;
     let (_, footer) = rest.split_once("</ol>").ok_or(ExportError::Template)?;
-    let mut result = format!("{greeting}{after_example}<ol>");
+    let multiple = summaries.len() != 1;
+    let tag = if multiple { "li" } else { "p" };
+    let mut result = format!("{greeting}{after_example}");
+    if multiple {
+        result.push_str("<ol>");
+    }
     for summary in summaries {
         let escaped = summary
             .trim_end()
@@ -224,10 +251,13 @@ fn html_body(template: &str, summaries: &[String]) -> Result<String, ExportError
             .join("<br>");
         let _ = write!(
             result,
-            "<li><font size=\"2\" face=\"arial, sans-serif\">{escaped}</font></li>"
+            "<{tag}><font size=\"2\" face=\"arial, sans-serif\">{escaped}</font></{tag}>"
         );
     }
-    let _ = write!(result, "</ol>{footer}");
+    if multiple {
+        result.push_str("</ol>");
+    }
+    result.push_str(footer);
     Ok(result)
 }
 
