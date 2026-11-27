@@ -60,4 +60,5 @@ Run `pwsh -File ./windows/build-app.ps1 -OutputPath ./GYDT-windows-x64.zip`
 on Windows x64, or `./macos/build-app.sh ./GYDT-macos-arm64.zip` on Apple
 Silicon. Neither build needs a separate profile folder.
 
-See the [production WordPress importer instructions](wordpress/README.md).
+See the [production WordPress importer instructions](wordpress/README.md)
+and the [release checklist](RELEASE.md).

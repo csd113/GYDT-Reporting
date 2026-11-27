@@ -37,11 +37,16 @@
   Remove and Clear List only hide rows for the account using them.
 - Removed the Newest and Oldest controls. Check ZIP is now at the bottom of
   the page and still checks without importing.
+- Replace an older installed importer with the v1.0.4 ZIP without deleting it.
+  On WordPress 5.8 and newer, future verified releases can appear under
+  Installed Plugins → Update now. Automatic updates are not enabled.
 
 ### Maintenance
 
 - Retired the obsolete demo and its importer package. Production package and
   desktop regression checks still use purpose-made synthetic data.
+- Require matching macOS, Windows, and production importer downloads and their
+  SHA-256 checksums for every release.
 
 ## 1.0.3
 

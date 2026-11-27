@@ -5,6 +5,7 @@ import json
 import os
 import re
 import subprocess
+import release_preflight
 from pathlib import Path
 
 TAG = re.compile(r"v(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})")
@@ -95,8 +96,10 @@ def rollover(event):
 
 if __name__ == "__main__":
     try:
-        print(rollover(json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())))
-    except Hold as error:
+        event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+        release_preflight.check_published_event(event)
+        print(rollover(event))
+    except (Hold, release_preflight.Hold, OSError) as error:
         print(f"Rollover not completed. {error}")
         raise SystemExit(1) from None
     except subprocess.CalledProcessError:
