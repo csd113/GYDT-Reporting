@@ -345,12 +345,14 @@ fn local_stage(folder: &Path, app_data: &Path) -> Result<PathBuf, WriteError> {
 }
 
 fn ensure_private_directory(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
+    let builder = fs::DirBuilder::new();
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::DirBuilderExt as _;
+        let mut builder = builder;
         builder.mode(0o700);
-    }
+        builder
+    };
     match builder.create(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -954,6 +956,33 @@ mod tests {
             b"new export"
         );
         assert_eq!(fs::read_dir(destination.path())?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "needs an explicit writable directory on a second volume"]
+    fn cross_volume_export_fails_before_writing_or_replacing() -> TestResult {
+        let app = tempfile::tempdir()?;
+        let second = std::env::var_os("GYDT_QA_SECOND_VOLUME").ok_or("missing second volume")?;
+        let destination = tempfile::tempdir_in(second)?;
+        assert!(!super::same_volume(app.path(), destination.path())?);
+        let old = destination.path().join(OUTPUT);
+        fs::write(&old, b"prior export")?;
+        let plan = plan();
+        for result in [
+            plan.inspect_with_local_staging(destination.path(), app.path())
+                .map(|_| ()),
+            plan.write_with_local_staging(destination.path(), None, app.path())
+                .map(|_| ()),
+        ] {
+            let Err(WriteError::Prepare { error, .. }) = result else {
+                return Err("cross-volume export was not blocked at preflight".into());
+            };
+            assert!(error.to_string().contains("different volume"));
+        }
+        assert_eq!(fs::read(&old)?, b"prior export");
+        assert_eq!(fs::read_dir(destination.path())?.count(), 1);
+        assert_eq!(fs::read_dir(app.path())?.count(), 0);
         Ok(())
     }
 

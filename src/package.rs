@@ -682,17 +682,14 @@ fn package(
         ));
     }
     let mut members = BTreeMap::from([("test_data.json", data.as_slice())]);
-    let photo_name = sample
-        .photo
-        .as_ref()
-        .map(|photo| format!("{stem}.{}", photo.extension));
+    let photo_name = format!("{stem}.jpg");
     let photo_copy = sample
         .photo
         .as_ref()
         .map(crate::Photo::for_import)
         .transpose()?;
-    if let (Some(name), Some(bytes)) = (photo_name.as_deref(), photo_copy.as_deref()) {
-        members.insert(name, bytes);
+    if let Some(bytes) = photo_copy.as_deref() {
+        members.insert(photo_name.as_str(), bytes);
     }
     if let Some((name, bytes)) = spectrum {
         members.insert(name, bytes);

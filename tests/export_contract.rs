@@ -592,7 +592,7 @@ fn two_samples_export_ordered_zips_and_separate_contact_drafts() -> TestResult {
     assert_eq!(email_plan.filenames().count(), 3);
     [first, second] = samples;
     assert_eq!(first.code_word, generated);
-    let a = verify_zip(email_dir.path(), &first, Some(("JpEg", &original)))?;
+    let a = verify_zip(email_dir.path(), &first, Some(("jpg", &original)))?;
     assert_eq!(fs::read(&source_path)?, original);
     let b = verify_zip(email_dir.path(), &second, None)?;
     assert_eq!(a.get("site"), Some(&Value::from("fixture-west")));
@@ -642,7 +642,7 @@ fn two_samples_export_ordered_zips_and_separate_contact_drafts() -> TestResult {
     )?;
     sms.write(sms_dir.path(), None)?;
     let [first, second] = &samples;
-    verify_zip(sms_dir.path(), first, Some(("JpEg", &original)))?;
+    verify_zip(sms_dir.path(), first, Some(("jpg", &original)))?;
     verify_zip(sms_dir.path(), second, None)?;
     let sms = fs::read_to_string(sms_dir.path().join(format!("{FIRST}.txt")))?;
     let sms_body = sms

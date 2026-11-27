@@ -16,14 +16,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for variable in ["RC", "PATH", "WindowsSdkVerBinPath", "ProgramFiles(x86)"] {
         println!("cargo:rerun-if-env-changed={variable}");
     }
-    let output = PathBuf::from(env::var_os("OUT_DIR").ok_or("Cargo did not supply OUT_DIR")?)
-        .join("gydt-app-icon.res");
+    let output_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or("Cargo did not supply OUT_DIR")?);
+    let output = output_dir.join("gydt-app.res");
+    let source = output_dir.join("gydt-app.rc");
+    let version = env!("CARGO_PKG_VERSION");
+    let parts = version
+        .split('.')
+        .map(str::parse::<u16>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let [major, minor, patch] = parts.as_slice() else {
+        return Err("Use a three-part numeric Windows version.".into());
+    };
+    let icon = fs::read_to_string("assets/app-icon.rc")?;
+    fs::write(
+        &source,
+        format!(
+            r#"{icon}
+1 VERSIONINFO
+FILEVERSION {major},{minor},{patch},0
+PRODUCTVERSION {major},{minor},{patch},0
+FILEOS 0x40004L
+FILETYPE 0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "ProductName", "GYDT Sample Reporting\0"
+            VALUE "OriginalFilename", "GYDT Sample Reporting.exe\0"
+            VALUE "FileVersion", "{version}\0"
+            VALUE "ProductVersion", "{version}\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+"#
+        ),
+    )?;
     let compiler = resource_compiler();
     let status = Command::new(&compiler)
         .current_dir("assets")
         .args(["/nologo", "/fo"])
         .arg(&output)
-        .arg("app-icon.rc")
+        .arg(&source)
         .status()
         .map_err(|error| {
             format!(

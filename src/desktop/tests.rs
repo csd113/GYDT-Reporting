@@ -191,7 +191,36 @@ fn desktop_reopens_exported_zip_with_same_identity_and_no_contact() -> Result<()
     assert_eq!(stored.channel, Channel::None);
     assert_eq!(stored.address, "");
     let restored = stored.photo.ok_or("Photo was lost during ZIP reopen")?;
-    assert_eq!(restored.name, format!("{stem}.JPEG"));
+    assert_eq!(restored.name, format!("{stem}.jpg"));
+    let mut legacy = members(&path)?;
+    let legacy_name = format!("{stem}.JPEG");
+    legacy
+        .iter_mut()
+        .find(|(name, _)| *name == restored.name)
+        .ok_or("missing canonical image")?
+        .0
+        .clone_from(&legacy_name);
+    let (_, manifest) = legacy
+        .iter_mut()
+        .find(|(name, _)| name == "manifest.json")
+        .ok_or("missing manifest")?;
+    let mut metadata: Value = serde_json::from_slice(manifest)?;
+    let files = metadata
+        .get_mut("files")
+        .and_then(Value::as_object_mut)
+        .ok_or("missing manifest files")?;
+    let member = files
+        .remove(&restored.name)
+        .ok_or("missing canonical member")?;
+    files.insert(legacy_name.clone(), member);
+    *manifest = serde_json::to_vec(&metadata)?;
+    let legacy_path = folder.path().join("legacy.zip");
+    repackage(&legacy_path, &legacy)?;
+    let legacy = reopen(&legacy_path, &catalogue)?
+        .photo
+        .ok_or("missing legacy JPEG")?;
+    assert_eq!(legacy.name, legacy_name);
+    assert_eq!(legacy.bytes()?, restored.bytes()?);
     assert_eq!(
         restored.bytes()?,
         draft.photo.ok_or("Expected synthetic JPEG")?.bytes()?
@@ -646,7 +675,7 @@ fn desktop_previews_arithmetic_jpegs_and_exports_the_original_bytes() -> Result<
 }
 
 #[test]
-fn picker_accepts_webcam_jpg_aliases_without_changing_source_or_export() -> Result<()> {
+fn picker_exports_canonical_jpg_without_changing_source_or_image_bytes() -> Result<()> {
     let root = tempfile::tempdir()?;
     let (ctx, mut app) = open_app(root.path())?;
     let jpeg = make_sample()?
@@ -672,7 +701,7 @@ fn picker_accepts_webcam_jpg_aliases_without_changing_source_or_export() -> Resu
         export_sample(&tab.draft, &app.profile, exports.path())?;
         assert!(
             members(&exports.path().join("Synthetic camera sample.zip"))?
-                .contains(&(format!("Synthetic camera sample.{extension}"), jpeg.clone()))
+                .contains(&("Synthetic camera sample.jpg".into(), jpeg.clone()))
         );
         assert_eq!(fs::read(&path)?, jpeg);
         fs::remove_file(path)?;
@@ -694,8 +723,8 @@ fn dropped_photo_renames_without_overwriting_and_does_not_move_before_confirmati
     let tab = app.tabs.first_mut().ok_or("Missing sample tab")?;
     tab.draft.title = "SYNTHETIC-901".into();
     let first = root.path().join("camera-one.JPG");
-    let second = root.path().join("camera-two.JPG");
-    let target = root.path().join("SYNTHETIC-901.JPG");
+    let second = root.path().join("camera-two.jpeg");
+    let target = root.path().join("SYNTHETIC-901.jpg");
     let send_drop = |app: &mut super::App, path: &Path| {
         let _ = ctx.run_ui(
             RawInput {
@@ -1001,6 +1030,9 @@ fn opus_setting_defaults_off_and_keeps_chosen_folder() -> Result<()> {
     let original: super::store::Settings =
         serde_json::from_str(r#"{"site":"fixture-east","codes":["990","991"],"folder":null}"#)?;
     assert!(!original.attach_opus && original.opus_folder.is_none());
+    assert!(!original.webcam_enabled);
+    #[cfg(windows)]
+    assert!(original.webcam_camera.is_none());
     let folder = tempfile::tempdir()?;
     let mut chosen = original.clone();
     chosen.opus_folder = Some(folder.path().to_owned());

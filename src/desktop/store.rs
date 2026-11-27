@@ -24,6 +24,11 @@ pub(super) struct Settings {
     pub(super) attach_opus: bool,
     #[serde(default)]
     pub(super) opus_folder: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) webcam_enabled: bool,
+    #[cfg(target_os = "windows")]
+    #[serde(default)]
+    pub(super) webcam_camera: Option<String>,
 }
 
 impl Settings {
@@ -36,6 +41,9 @@ impl Settings {
             folder_day: None,
             attach_opus: false,
             opus_folder: None,
+            webcam_enabled: false,
+            #[cfg(target_os = "windows")]
+            webcam_camera: None,
         }
     }
 
@@ -76,6 +84,9 @@ impl Settings {
         }
         if edited.opus_folder != original.opus_folder {
             next.opus_folder.clone_from(&edited.opus_folder);
+        }
+        if edited.webcam_enabled != original.webcam_enabled {
+            next.webcam_enabled = edited.webcam_enabled;
         }
         for ((current, original), edited) in next
             .codes

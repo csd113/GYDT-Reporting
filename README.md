@@ -10,17 +10,19 @@ client messages.
 2. Open `GYDT Sample Reporting.exe` on Windows x64 or
    `GYDT Sample Reporting.app` on Apple Silicon. The approved profile is
    built in. There is no separate profile file to install.
-3. Choose your export folder in Settings if you haven't already set it.
+3. Choose your export folder for the current Vancouver work day. The app
+   remembers it until the next work day, when you must confirm a folder again.
 
 Version 1.0.2 uses the same local store as 1.0.1 when it used the approved
 staff profile. Keep the app and exported results in locations accessible
 only to authorized staff.
 
-Download the matching production WordPress importer for the staff Results workflow from [GitHub Releases](https://github.com/csd113/GYDT-Reporting/releases).
+Download the matching production WordPress importer and SHA-256 checksums
+from [GitHub Releases](https://github.com/csd113/GYDT-Reporting/releases).
 New drafts use the exporting computer's timestamp, displayed in Vancouver local
 time. Collection and analysis dates remain separate.
 
-Verify downloads against the [release SHA-256 checksums](https://github.com/csd113/GYDT-Reporting/releases/download/v1.0.2/SHA256SUMS.txt). The desktop app is not
+The desktop app is not
 signed by a trusted publisher. If your verified download is blocked, see the
 platform's per-app guidance without turning off system protections.
 [Windows SmartScreen](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation) ·
@@ -35,8 +37,17 @@ copies the same bytes into the ZIP and beside it. Use a separate export folder.
 If OPUS denies access, unload the named file and retry. A file can still export
 while open if the operating system allows the app to snapshot it.
 
-The current WordPress importer v1.0.2 rejects ZIPs containing a spectrum.
-Leave this setting off for WordPress uploads until the importer supports it.
+WordPress uploads with OPUS require the paired production importer v1.0.4.
+Leave OPUS off if the site still runs importer v1.0.2.
+
+### Optional webcam on Windows
+
+Turn on **Enable webcam capture** in Settings. On a sample, choose **Take
+photo…**, select a color camera, and start the preview. **Use photo** attaches
+the captured JPEG to that sample. The video is not recorded or uploaded. You
+can still attach a JPG file without enabling the webcam. Extract the Windows
+ZIP with its camera helper beside the app. No webcam setting appears on macOS.
+To build the Windows ZIP, install the Visual C++ x64 tools and Windows SDK.
 
 ## Build and test
 

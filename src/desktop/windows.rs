@@ -74,11 +74,7 @@ pub(super) fn rename_dropped_photo(
             "The sample has no submission number yet. The source was left unchanged.".into(),
         );
     }
-    let name = format!(
-        "{}.{}",
-        super::model::filename_stem(&title),
-        photo.extension
-    );
+    let name = format!("{}.jpg", super::model::filename_stem(&title));
     if source
         .file_name()
         .is_some_and(|current| current == name.as_str())

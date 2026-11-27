@@ -15,7 +15,6 @@ const MAX_SIDE: u32 = 4096;
 const MAX_PIXELS: u32 = 8_388_608;
 
 pub struct Photo {
-    pub(crate) extension: String,
     pub(crate) bytes: Vec<u8>,
 }
 
@@ -62,10 +61,7 @@ impl Photo {
             return Err(invalid("photo", "Choose a JPEG up to 4 MiB."));
         }
         validate(&bytes, Metadata::Camera)?;
-        Ok(Self {
-            extension: extension.into(),
-            bytes,
-        })
+        Ok(Self { bytes })
     }
 
     /// Returns the original bytes without modifying or re-encoding them.

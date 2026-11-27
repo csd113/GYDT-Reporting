@@ -281,6 +281,10 @@ pub(super) enum SettingsSection {
 }
 
 impl App {
+    fn webcam_enabled(&self) -> bool {
+        cfg!(target_os = "windows") && self.book.settings.webcam_enabled
+    }
+
     pub(super) fn show(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
         background(ui);
@@ -365,6 +369,7 @@ impl App {
                     .tabs
                     .get(index)
                     .is_some_and(|tab| tab.draft.photo.is_some())
+                    || self.webcam_enabled()
                 {
                     self.dialog = Some(Dialog::PhotoOptions);
                 } else {
@@ -2289,12 +2294,28 @@ fn settings_sections(
             ui.separator();
             ui.add_space(2.0);
             let export = ui.label(bold("Export", 16.0));
-            let choose = settings_folder(ui, "Default export folder", settings.draft.folder.as_deref());
-            ui.checkbox(&mut settings.draft.attach_opus, "Attach OPUS spectrum to exports");
-            let choose_opus = settings_folder(ui, "OPUS spectrum folder", settings.draft.opus_folder.as_deref());
+            let choose = settings_folder(
+                ui,
+                "Default export folder",
+                settings.draft.folder.as_deref(),
+            );
+            ui.checkbox(
+                &mut settings.draft.attach_opus,
+                "Attach OPUS spectrum to exports",
+            );
+            let choose_opus = settings_folder(
+                ui,
+                "OPUS spectrum folder",
+                settings.draft.opus_folder.as_deref(),
+            );
             if settings.draft.attach_opus {
-                hint(ui, "The current WordPress importer (v1.0.2) does not accept ZIPs that include OPUS files.");
+                hint(
+                    ui,
+                    "WordPress uploads with OPUS require the production importer v1.0.4.",
+                );
             }
+            #[cfg(target_os = "windows")]
+            ui.checkbox(&mut settings.draft.webcam_enabled, "Enable webcam capture");
             if let Some(error) = &settings.error {
                 ui.label(RichText::new(error).color(INVALID));
             }
@@ -2433,12 +2454,19 @@ fn completion_view(
     action
 }
 
+#[cfg_attr(not(target_os = "windows"), derive(Clone, Copy))]
 enum ModalAction {
     Keep,
     WordPressOnly,
     Dismiss,
     Folder,
     Photo,
+    #[cfg(target_os = "windows")]
+    StartWebcam,
+    #[cfg(target_os = "windows")]
+    RememberWebcam(String),
+    #[cfg(target_os = "windows")]
+    UseWebcam(PhotoCopy, String),
     Replace,
     Remove,
     Repeat,
@@ -2451,6 +2479,12 @@ impl App {
         let Some(mut dialog) = self.dialog.take() else {
             return;
         };
+        #[cfg(target_os = "windows")]
+        if let Dialog::Webcam(preview) = &dialog
+            && !preview.matches_target(self.webcam_target().map(|(_, id)| id))
+        {
+            return;
+        }
         let key = dialog_key(&dialog);
         let response = egui::Modal::new(Id::new(key))
             .backdrop_color(Color32::from_rgba_unmultiplied(24, 35, 62, 85))
@@ -2474,10 +2508,13 @@ impl App {
                     self.dialog_contents(ui, &mut dialog)
                 }
             });
-        if response.should_close() {
-            return;
+        if !response.should_close() {
+            self.handle_modal_action(ctx, dialog, response.inner);
         }
-        match response.inner {
+    }
+
+    fn handle_modal_action(&mut self, ctx: &Context, dialog: Dialog, action: ModalAction) {
+        match action {
             ModalAction::Keep => self.dialog = Some(dialog),
             ModalAction::Dismiss => {}
             ModalAction::Folder => self.choose_folder(false),
@@ -2488,6 +2525,22 @@ impl App {
                 }
             }
             ModalAction::Photo => self.choose_photo(ctx),
+            #[cfg(target_os = "windows")]
+            ModalAction::StartWebcam => self.open_webcam(),
+            #[cfg(target_os = "windows")]
+            ModalAction::RememberWebcam(id) => {
+                self.remember_camera(id);
+                self.dialog = Some(dialog);
+            }
+            #[cfg(target_os = "windows")]
+            ModalAction::UseWebcam(photo, key) => {
+                if let Dialog::Webcam(preview) = dialog {
+                    let id = preview.sample;
+                    drop(preview);
+                    self.remember_camera(key);
+                    self.attach_webcam(ctx, id, photo);
+                }
+            }
             ModalAction::Replace => {
                 if let Dialog::ReplacePhoto(index, photo) = dialog {
                     self.finish_photo(ctx, index, photo);
@@ -2539,12 +2592,26 @@ impl App {
             Dialog::PhotoPrompt => {
                 modal_title(ui, "Sample photo");
                 ui.label("Take a photo of the sample before crushing it, then attach the .jpg or .jpeg here.");
+                #[cfg(target_os = "windows")]
+                if self.webcam_enabled() && ui.button("Take photo…").clicked() {
+                    return ModalAction::StartWebcam;
+                }
                 dialog_buttons(ui, "Close", "Attach photo…", ModalAction::Photo)
             }
             Dialog::ReplacePhoto(_, photo) => {
                 modal_title(ui, "Replace sample photo?");
                 ui.label(format!("Use {} for this sample?", photo.copy.name));
                 dialog_buttons(ui, "Cancel", "Replace photo", ModalAction::Replace)
+            }
+            #[cfg(target_os = "windows")]
+            Dialog::Webcam(preview) => {
+                modal_title(ui, "Sample webcam photo");
+                match preview.show(ui) {
+                    super::webcam::Action::Keep => ModalAction::Keep,
+                    super::webcam::Action::Cancel => ModalAction::Dismiss,
+                    super::webcam::Action::Remember(id) => ModalAction::RememberWebcam(id),
+                    super::webcam::Action::Use(photo, key) => ModalAction::UseWebcam(photo, key),
+                }
             }
             Dialog::PhotoOptions => {
                 modal_title(ui, "Sample photo");
@@ -2555,8 +2622,12 @@ impl App {
                 if let Some(photo) = current {
                     ui.label(&photo.name);
                 }
+                #[cfg(target_os = "windows")]
+                if self.webcam_enabled() && ui.button("Take photo…").clicked() {
+                    return ModalAction::StartWebcam;
+                }
                 ui.horizontal(|ui| {
-                    if ui.button("Remove photo").clicked() {
+                    if current.is_some() && ui.button("Remove photo").clicked() {
                         return ModalAction::Remove;
                     }
                     dialog_buttons(ui, "Close", "Choose another…", ModalAction::Photo)
@@ -2694,6 +2765,8 @@ fn dialog_key(dialog: &Dialog) -> &'static str {
         Dialog::ReplacePhoto(..) => "replace photo",
         Dialog::PhotoOptions => "photo menu",
         Dialog::ContactUnavailable(_) => "unavailable contact",
+        #[cfg(target_os = "windows")]
+        Dialog::Webcam(_) => "webcam preview",
         Dialog::Batch(..) => "sample selection",
         Dialog::Repeat(..) => "re-export warning",
         Dialog::Overwrite(..) => "overwrite warning",

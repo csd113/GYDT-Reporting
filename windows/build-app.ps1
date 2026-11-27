@@ -61,12 +61,15 @@ try {
     $binary = Join-Path $stage $name
     $zip = Join-Path $stage 'application.zip'
     Copy-Item -LiteralPath $compiled -Destination $binary
-    Compress-Archive -LiteralPath $binary -DestinationPath $zip -CompressionLevel Optimal
+    $camera = Join-Path $stage 'GYDT-camera.exe'
+    & (Join-Path $PSScriptRoot 'build-camera.ps1') -OutputPath $camera
+    Compress-Archive -LiteralPath @($binary, $camera) -DestinationPath $zip -CompressionLevel Optimal
     $ready = [IO.Compression.ZipFile]::OpenRead($zip)
     try {
-        if ($ready.Entries.Count -ne 1 -or $ready.Entries[0].FullName -cne $name -or
-            $ready.Entries[0].Length -ne (Get-Item -LiteralPath $binary).Length) {
-            throw 'The package does not contain exactly the expected executable.'
+        if ($ready.Entries.Count -ne 2 -or
+            $ready.GetEntry($name).Length -ne (Get-Item -LiteralPath $binary).Length -or
+            $ready.GetEntry('GYDT-camera.exe').Length -ne (Get-Item -LiteralPath $camera).Length) {
+            throw 'The package does not contain exactly the app and camera helper.'
         }
     } finally {
         $ready.Dispose()

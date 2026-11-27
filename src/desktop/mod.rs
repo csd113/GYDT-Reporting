@@ -4,6 +4,8 @@ mod model;
 mod store;
 mod ui;
 #[cfg(target_os = "windows")]
+mod webcam;
+#[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(test)]
@@ -160,6 +162,8 @@ enum Dialog {
     ReplacePhoto(usize, PendingPhoto),
     PhotoOptions,
     ContactUnavailable(Selection),
+    #[cfg(target_os = "windows")]
+    Webcam(Box<webcam::Preview>),
     Batch(Vec<bool>, bool),
     Repeat(Selection, Vec<String>),
     Overwrite(Selection, Box<Plan>),
@@ -745,6 +749,43 @@ impl App {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    fn webcam_target(&self) -> Option<(usize, uuid::Uuid)> {
+        let index = self.active?;
+        let sample = self.tabs.get(index)?.draft.id;
+        self.book.settings.webcam_enabled.then_some((index, sample))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn open_webcam(&mut self) {
+        if let Some((_, sample)) = self.webcam_target() {
+            self.dialog = Some(Dialog::Webcam(Box::new(webcam::Preview::new(
+                sample,
+                self.book.settings.webcam_camera.clone(),
+            ))));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn attach_webcam(&mut self, ctx: &Context, sample: uuid::Uuid, photo: PhotoCopy) {
+        if let Some((index, active)) = self.webcam_target()
+            && sample == active
+        {
+            self.set_photo(ctx, index, Some(photo));
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn remember_camera(&mut self, raw_id: String) {
+        if self.book.settings.webcam_camera.as_ref() != Some(&raw_id) {
+            let mut next = self.book.clone();
+            next.settings.webcam_camera = Some(raw_id);
+            if self.store.save_book(&next).is_ok() {
+                self.book = next;
+            }
+        }
+    }
+
     fn finish_photo(&mut self, ctx: &Context, index: usize, pending: PendingPhoto) {
         self.dialog = None;
         #[cfg(target_os = "windows")]
@@ -775,6 +816,10 @@ impl App {
     }
 
     fn dropped(&mut self, ctx: &Context) {
+        #[cfg(target_os = "windows")]
+        if matches!(self.dialog, Some(Dialog::Webcam(_))) {
+            return;
+        }
         let drop = ctx.input(|input| input.raw.dropped_files.clone());
         if drop.is_empty() || self.worker.busy() {
             return;
@@ -1037,6 +1082,12 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         #[cfg(target_os = "windows")]
         windows::fit_to_work_area(&mut self.last_work_area);
+        #[cfg(target_os = "windows")]
+        if matches!(self.dialog, Some(Dialog::Webcam(_)))
+            && ctx.input(|input| input.viewport().minimized == Some(true))
+        {
+            self.dialog = None;
+        }
         if let Some(event) = self.worker.poll() {
             self.handle_export(ctx, event);
         }
@@ -1050,6 +1101,10 @@ impl eframe::App for App {
             self.cancel_settings();
         }
         if ctx.input(|input| input.viewport().close_requested()) {
+            #[cfg(target_os = "windows")]
+            if matches!(self.dialog, Some(Dialog::Webcam(_))) {
+                self.dialog = None;
+            }
             if self.worker.busy() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             } else if let Err(error) = self.flush(true) {
