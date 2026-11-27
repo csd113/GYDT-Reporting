@@ -14,9 +14,13 @@ client messages.
 
 Version 1.0.2 uses the same local store as 1.0.1 when it used the approved
 staff profile. Keep the app and exported results in locations accessible
-only to authorized staff. Keep using your existing WordPress importer.
+only to authorized staff.
 
-Verify downloads against the release SHA-256 manifest. The desktop app is not
+Download the [production WordPress importer v1.0.2](https://github.com/csd113/GYDT-Reporting/releases/download/v1.0.2/GYDT-Sample-Results-Importer-v1.0.2.zip) for the staff Results workflow.
+New drafts use the exporting computer's timestamp, displayed in Vancouver local
+time. Collection and analysis dates remain separate.
+
+Verify downloads against the [release SHA-256 checksums](https://github.com/csd113/GYDT-Reporting/releases/download/v1.0.2/SHA256SUMS.txt). The desktop app is not
 signed by a trusted publisher. If your verified download is blocked, see the
 platform's per-app guidance without turning off system protections.
 [Windows SmartScreen](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation) ·

@@ -5,6 +5,9 @@
 - Build the approved profile into the app, so it opens without a separate folder.
 - Keep the same local store, catalogue IDs, site mapping, and ZIP format for
   installations that used the approved v1.0.1 profile.
+- The production WordPress importer now timestamps new drafts with the
+  exporting computer's time, displayed in Vancouver local time. Collection
+  and analysis dates remain separate.
 
 ## 1.0.1
 
