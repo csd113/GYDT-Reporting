@@ -1,5 +1,43 @@
 # Release notes
 
+## 1.0.4 (unreleased)
+
+### Desktop app
+
+- Choose today’s export folder at the start of each Vancouver work day. The
+  selection is remembered for the rest of that day. Yesterday’s folder is not
+  reused unless you choose it again.
+- Exports stage temporary files in local app data. Choose an export folder on
+  the same drive as the app data. The app doesn’t clean up old destination files.
+- OPUS export is off by default. When enabled, the app uses your saved OPUS
+  source folder to copy the exact submission’s `.0` file beside and inside the
+  ZIP. If access is denied, unload the file in OPUS and retry. Nothing from that
+  export is saved in the destination or recorded as exported.
+- JPEGs export as `.jpg` without changing the image bytes. A photo already
+  saved under that name is not overwritten.
+- Windows webcam capture is off by default. When enabled, choose a color camera
+  by name and explicitly start its live preview. Capture, retake, or attach the
+  photo as a JPEG. Where supported, switch cameras or refresh and reconnect
+  without reopening the app. The app never switches cameras on its own.
+- Additional samples deliberately linked to the same visit show which original
+  tab holds their contact details. Select the indicator to go to that tab.
+  Contact drafts use the original tab’s details without copying them to each sample.
+- The local text draft shows the intended recipient on a `To:` line. Email and
+  text drafts omit the sample heading for one report and keep numbered headings
+  for multiple reports. The messages still omit internal submission numbers.
+
+### WordPress importer
+
+- Use production importer v1.0.4 with desktop v1.0.4 for ZIPs that include OPUS.
+  Staff with access to edit the corresponding Test Result can download its
+  spectrum. It is not added to the public Media Library.
+- Today’s Uploads shows successful uploads across staff accounts, with live
+  Draft or Published status and the highest numeric sample suffix first. The
+  site-day count includes each successful upload once, before personal hiding.
+  Remove and Clear List only hide rows for the account using them.
+- Removed the Newest and Oldest controls. Check ZIP is now at the bottom of
+  the page and still checks without importing.
+
 ## 1.0.3
 
 - Put exact substance names first in both pickers while keeping dash-insensitive search.
