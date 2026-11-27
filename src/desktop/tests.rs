@@ -542,7 +542,8 @@ fn combined_contact_resolves_across_tab_orders_and_uses_the_first_title() -> Res
             [with.clone(), without.clone()],
         ] {
             let folder = tempfile::tempdir()?;
-            let prepared = export::prepare(&all, &mut drafts, folder.path(), &[], &catalogue)?;
+            let prepared =
+                export::prepare(&all, &mut drafts, folder.path(), &[], &catalogue, None)?;
             let [first, second] = &drafts;
             assert_eq!((prepared.plan.write()?).written.len(), 3);
             let draft =
@@ -573,7 +574,8 @@ fn combined_contact_resolves_across_tab_orders_and_uses_the_first_title() -> Res
                 &mut [without.clone(), with],
                 folder.path(),
                 &[],
-                &catalogue
+                &catalogue,
+                None
             )
             .is_err()
         );
@@ -582,8 +584,14 @@ fn combined_contact_resolves_across_tab_orders_and_uses_the_first_title() -> Res
         let mut other = make_sample()?;
         other.title = "Synthetic-B".into();
         other.channel = Channel::None;
-        let wordpress_only =
-            export::prepare(&all, &mut [without, other], folder.path(), &[], &catalogue)?;
+        let wordpress_only = export::prepare(
+            &all,
+            &mut [without, other],
+            folder.path(),
+            &[],
+            &catalogue,
+            None,
+        )?;
         assert_eq!((wordpress_only.plan.write()?).written.len(), 2);
     }
     Ok(())
@@ -908,5 +916,136 @@ fn embedded_profile_preserves_previous_staff_store_and_jpeg_export() -> Result<(
         roundtrip.photo.ok_or("Missing exported JPEG")?.bytes()?,
         photo
     );
+    Ok(())
+}
+
+#[test]
+fn opus_batch_preflight_and_immutable_zip_and_sibling() -> Result<()> {
+    use std::io::Read as _;
+
+    let profile = fixture_profile()?;
+    let source = tempfile::tempdir()?;
+    let destination = tempfile::tempdir()?;
+    let mut first = make_sample()?;
+    first.title = "Synthetic-A".into();
+    first.channel = Channel::Email;
+    first.address = "case@example.invalid".into();
+    let mut second = make_sample()?;
+    second.title = "Synthetic-B".into();
+    second.channel = Channel::Email;
+    second.address = first.address.clone();
+    let mut drafts = [first, second];
+    let batch = super::export::Selection {
+        tabs: vec![0, 1],
+        wordpress_only: false,
+        confirmed: false,
+    };
+    let export = |drafts: &mut [Draft], opus| {
+        super::export::prepare(&batch, drafts, destination.path(), &[], &profile, opus)
+    };
+    let a = source.path().join("Synthetic-A.0");
+    let b = source.path().join("Synthetic-B.0");
+    let old = destination.path().join("Synthetic-A.0");
+    fs::write(&a, b"\0first\xff")?;
+    fs::write(source.path().join("synthetic-b.0"), b"wrong case")?;
+    fs::write(&old, b"existing")?;
+    let before = drafts.clone();
+    let Err(blocked) = export(&mut drafts, Some(source.path())) else {
+        return Err("A case-mismatched OPUS name was accepted.".into());
+    };
+    assert!(blocked.to_string().contains("Can't find Synthetic-B.0"));
+    assert_eq!(drafts, before);
+    assert_eq!(fs::read(&old)?, b"existing");
+    assert_eq!(fs::read_dir(destination.path())?.count(), 1);
+    assert!(gydt_results_compiler::OpusSource::new(source.path(), source.path()).is_err());
+    let off = export(&mut drafts, None)?;
+    assert_eq!(off.plan.write()?.written.len(), 3);
+    assert!(!destination.path().join("Synthetic-B.0").exists());
+    fs::remove_file(source.path().join("synthetic-b.0"))?;
+    fs::write(&b, b"\xfeexact second\0")?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let exclusive = fs::OpenOptions::new().read(true).share_mode(0).open(&b)?;
+        let Err(blocked) = export(&mut drafts, Some(source.path())) else {
+            return Err("An actual deny-read handle did not block the batch.".into());
+        };
+        assert!(blocked.to_string().contains("Unload Synthetic-B.0 in OPUS"));
+        assert_eq!(fs::read(&old)?, b"existing");
+        assert_eq!(fs::read_dir(destination.path())?.count(), 4);
+        drop(exclusive);
+    }
+    let full = export(&mut drafts, Some(source.path()))?;
+    assert_eq!(full.plan.write()?.written.len(), 5);
+    for (title, expected) in [
+        ("Synthetic-A", b"\0first\xff".as_slice()),
+        ("Synthetic-B", b"\xfeexact second\0".as_slice()),
+    ] {
+        let opus_name = format!("{title}.0");
+        let zip_path = destination.path().join(format!("{title}.zip"));
+        let mut zip = zip::ZipArchive::new(fs::File::open(&zip_path)?)?;
+        let mut member = Vec::new();
+        zip.by_name(&opus_name)?.read_to_end(&mut member)?;
+        assert_eq!(member, expected);
+        assert_eq!(fs::read(destination.path().join(&opus_name))?, expected);
+        assert_eq!(fs::read(source.path().join(&opus_name))?, expected);
+        let reopened = super::archive::reopen(&zip_path, &profile)?;
+        assert_eq!(reopened.title, title);
+        assert_eq!(reopened.address, "");
+    }
+    Ok(())
+}
+
+#[test]
+fn opus_setting_defaults_off_and_keeps_chosen_folder() -> Result<()> {
+    let original: super::store::Settings =
+        serde_json::from_str(r#"{"site":"fixture-east","codes":["990","991"],"folder":null}"#)?;
+    assert!(!original.attach_opus && original.opus_folder.is_none());
+    let folder = tempfile::tempdir()?;
+    let mut chosen = original.clone();
+    chosen.opus_folder = Some(folder.path().to_owned());
+    let mut persisted = original.merge_edits(&original, &chosen);
+    persisted.attach_opus = true;
+    let mut toggled = persisted.clone();
+    toggled.attach_opus = false;
+    let merged = persisted.merge_edits(&persisted, &toggled);
+    let loaded: super::store::Settings = serde_json::from_slice(&serde_json::to_vec(&merged)?)?;
+    assert!(!loaded.attach_opus);
+    assert_eq!(loaded.opus_folder.as_deref(), Some(folder.path()));
+    Ok(())
+}
+
+#[test]
+#[ignore = "writes a synthetic local WordPress interop ZIP to an explicit QA directory"]
+fn stage_opus_wordpress_qa() -> Result<()> {
+    let input = std::env::var_os("GYDT_OPUS_QA_INPUT").ok_or("Set the synthetic QA input ZIP")?;
+    let root = std::path::PathBuf::from(
+        std::env::var_os("GYDT_OPUS_QA_DIR").ok_or("Set the synthetic QA folder")?,
+    );
+    let source = root.join("source");
+    let destination = root.join("exports");
+    fs::create_dir(&source)?;
+    fs::create_dir(&destination)?;
+    let profile = Profile::embedded()?;
+    let mut draft = super::archive::reopen(std::path::Path::new(&input), &profile)?;
+    draft.title = "3-993-2026-11-26-897".into();
+    fs::write(
+        source.join(format!("{}.0", draft.title)),
+        b"\0Synthetic OPUS QA binary\xff",
+    )?;
+    let selection = super::export::Selection {
+        tabs: vec![0],
+        wordpress_only: true,
+        confirmed: false,
+    };
+    let prepared = super::export::prepare(
+        &selection,
+        &mut [draft],
+        &destination,
+        &[],
+        &profile,
+        Some(&source),
+    )?;
+    assert_eq!(prepared.plan.write()?.written.len(), 2);
     Ok(())
 }

@@ -541,6 +541,24 @@ impl App {
         }
     }
 
+    fn choose_opus_folder(&mut self) {
+        let Some(settings) = &mut self.settings else {
+            return;
+        };
+        let mut picker = rfd::FileDialog::new().set_title("Choose OPUS spectrum folder");
+        if let Some(parent) = settings
+            .draft
+            .opus_folder
+            .as_deref()
+            .and_then(nearest_directory)
+        {
+            picker = picker.set_directory(parent);
+        }
+        if let Some(folder) = picker.pick_folder() {
+            settings.draft.opus_folder = Some(folder);
+        }
+    }
+
     fn open_zip(&mut self, ctx: &Context, path: &Path) {
         match archive::reopen(path, &self.profile) {
             Ok(draft) => {
@@ -745,12 +763,27 @@ impl App {
             self.dialog = Some(Dialog::Repeat(selection, repeats));
             return;
         }
+        let opus_folder = if self.book.settings.attach_opus {
+            let Some(source) = self.book.settings.opus_folder.clone() else {
+                self.notice(
+                    "Choose an OPUS folder",
+                    "Choose the OPUS spectrum folder in Settings, or turn off OPUS attachment.",
+                );
+                return;
+            };
+            Some(source)
+        } else {
+            None
+        };
         self.status = None;
         if let Err(error) = self.worker.prepare(
             ctx,
             selection,
             drafts,
-            folder,
+            export::Destination {
+                folder,
+                opus_folder,
+            },
             self.book.history.clone(),
             self.profile.clone(),
         ) {

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{Cursor, Write as _},
+    sync::Arc,
 };
 
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
@@ -9,8 +10,8 @@ use uuid::{Uuid, Variant, Version};
 use zip::{CompressionMethod, System, ZipWriter, write::SimpleFileOptions};
 
 use crate::{
-    AdverseEvents, Catalogue, CollectionSite, Consumption, ExportError, Profile, Sample, Strips,
-    Substance, draft, invalid, live_textures, sha256,
+    AdverseEvents, Catalogue, CollectionSite, Consumption, ExportError, OpusSource, Profile,
+    Sample, Strips, Substance, draft, invalid, live_textures, opus::MAX_BATCH_OPUS_BYTES, sha256,
 };
 
 const MAX_MANIFEST: usize = 8 * 1024;
@@ -104,6 +105,7 @@ pub(crate) struct Artifact {
 pub struct PreparedExport {
     pub(crate) outputs: Vec<Artifact>,
     pub(crate) history: Vec<ExportHistoryEntry>,
+    pub(crate) opus_source: Option<Arc<same_file::Handle>>,
 }
 
 impl PreparedExport {
@@ -186,7 +188,7 @@ pub fn prepare_export(
     request: ExportRequest<'_>,
 ) -> Result<PreparedExport, ExportError> {
     let templates = draft::Templates::fixture();
-    prepare(samples, catalogue, &templates, fixture_site, request)
+    prepare(samples, catalogue, &templates, fixture_site, request, None)
 }
 
 /// Prepares the same format-1 export with the selected private profile.
@@ -198,12 +200,25 @@ pub fn prepare_profile_export(
     profile: &Profile,
     request: ExportRequest<'_>,
 ) -> Result<PreparedExport, ExportError> {
+    prepare_profile_export_with_opus(samples, profile, request, None)
+}
+
+/// Prepares a desktop export, optionally collecting an exact OPUS member per sample.
+/// # Errors
+/// Returns an error if any selected sample or spectrum cannot be prepared.
+pub fn prepare_profile_export_with_opus(
+    samples: &mut [Sample],
+    profile: &Profile,
+    request: ExportRequest<'_>,
+    opus: Option<&OpusSource>,
+) -> Result<PreparedExport, ExportError> {
     prepare(
         samples,
         profile.catalogue(),
         &profile.templates,
         |site| profile.site(site).token(),
         request,
+        opus,
     )
 }
 
@@ -220,6 +235,7 @@ fn prepare<'a>(
     templates: &draft::Templates,
     site_token: impl Fn(CollectionSite) -> &'a str,
     request: ExportRequest<'_>,
+    opus: Option<&OpusSource>,
 ) -> Result<PreparedExport, ExportError> {
     let contact = draft::validate_contact(request.contact)?;
     if !matches!(contact, Contact::WordPressOnly)
@@ -260,6 +276,7 @@ fn prepare<'a>(
         .to_string();
     let mut names = HashSet::new();
     let mut outputs = Vec::new();
+    let mut opus_size = 0;
     let visit_key = |sample: &Sample| (sample.site, sample.analysis_date, sample.visit);
     let mut visit_codes = HashMap::<_, HashSet<_>>::new();
     for (sample, payload) in samples.iter().zip(&payloads) {
@@ -280,8 +297,30 @@ fn prepare<'a>(
             let reserved = visit_codes.entry(visit_key(sample)).or_default();
             payload.client = reserve_code(reserved, random_code_start()?)?;
         }
-        let bytes = package(sample, payload, &stem, &exported_at, catalogue.version())?;
+        let spectrum = opus
+            .map(|src| src.snapshot(&payload.submission_number))
+            .transpose()?;
+        if let Some((_, bytes)) = &spectrum {
+            opus_size += bytes.len();
+            if opus_size > MAX_BATCH_OPUS_BYTES {
+                return Err(ExportError::Opus("The selected OPUS files total more than 32 MiB. Export fewer samples at a time.".into()));
+            }
+        }
+        let bytes = package(
+            sample,
+            payload,
+            &stem,
+            &exported_at,
+            catalogue.version(),
+            spectrum
+                .as_ref()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice())),
+        )?;
         outputs.push(Artifact { name, bytes });
+        if let Some((name, bytes)) = spectrum {
+            // The exact spectrum stem is the same as the unique ZIP stem.
+            outputs.push(Artifact { name, bytes });
+        }
     }
     if let Some(artifact) = draft::make(contact, catalogue, templates, &payloads, &first_stem)? {
         outputs.push(artifact);
@@ -292,7 +331,11 @@ fn prepare<'a>(
             sample.code_word = code;
         }
     }
-    Ok(PreparedExport { outputs, history })
+    Ok(PreparedExport {
+        outputs,
+        history,
+        opus_source: opus.map(|source| Arc::clone(&source.identity)),
+    })
 }
 
 fn validate<'a>(
@@ -534,7 +577,7 @@ fn reserve_code(reserved: &mut HashSet<String>, start: u32) -> Result<String, Ex
     Err(invalid("code word", "Enter a code word for this sample."))
 }
 
-fn filename_stem(title: &str) -> String {
+pub(crate) fn filename_stem(title: &str) -> String {
     let base = title
         .split('.')
         .next()
@@ -629,6 +672,7 @@ fn package(
     stem: &str,
     exported_at: &str,
     catalogue_version: &str,
+    spectrum: Option<(&str, &[u8])>,
 ) -> Result<Vec<u8>, ExportError> {
     let data = serde_json::to_vec(payload)?;
     if data.len() > MAX_DATA {
@@ -648,6 +692,9 @@ fn package(
         .map(crate::Photo::for_import)
         .transpose()?;
     if let (Some(name), Some(bytes)) = (photo_name.as_deref(), photo_copy.as_deref()) {
+        members.insert(name, bytes);
+    }
+    if let Some((name, bytes)) = spectrum {
         members.insert(name, bytes);
     }
     let files = members

@@ -26,6 +26,18 @@ platform's per-app guidance without turning off system protections.
 [Windows SmartScreen](https://learn.microsoft.com/windows/apps/package-and-deploy/smartscreen-reputation) ·
 [macOS Open Anyway](https://support.apple.com/en-us/102445)
 
+### Optional OPUS spectra
+
+In Settings, choose an OPUS folder and turn on **Attach OPUS spectrum to
+exports**. This is off by default, and the folder choice is remembered either way.
+Export looks for the exact finalized submission number followed by `.0` and
+copies the same bytes into the ZIP and beside it. Use a separate export folder.
+If OPUS denies access, unload the named file and retry. A file can still export
+while open if the operating system allows the app to snapshot it.
+
+The current WordPress importer v1.0.2 rejects ZIPs containing a spectrum.
+Leave this setting off for WordPress uploads until the importer supports it.
+
 ## Build and test
 
 Use the pinned Rust toolchain, then run `cargo test --locked`. The approved desktop

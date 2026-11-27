@@ -305,6 +305,7 @@ impl App {
                 .inner;
             match action {
                 SettingsAction::ChooseFolder => self.choose_folder(true),
+                SettingsAction::ChooseOpusFolder => self.choose_opus_folder(),
                 SettingsAction::OpenDataFolder => {
                     if let Err(error) = self.store.open_data_folder() {
                         self.notice("Can't open the data folder", error.to_string());
@@ -2085,6 +2086,7 @@ fn primary_button(ui: &mut Ui, text: &str, width: f32, enabled: bool) -> Respons
 enum SettingsAction {
     None,
     ChooseFolder,
+    ChooseOpusFolder,
     OpenDataFolder,
     Cancel,
     Save,
@@ -2240,7 +2242,12 @@ fn settings_sections(
             ui.separator();
             ui.add_space(2.0);
             let export = ui.label(bold("Export", 16.0));
-            let choose = settings_folder(ui, settings);
+            let choose = settings_folder(ui, "Default export folder", settings.draft.folder.as_deref());
+            ui.checkbox(&mut settings.draft.attach_opus, "Attach OPUS spectrum to exports");
+            let choose_opus = settings_folder(ui, "OPUS spectrum folder", settings.draft.opus_folder.as_deref());
+            if settings.draft.attach_opus {
+                hint(ui, "The current WordPress importer (v1.0.2) does not accept ZIPs that include OPUS files.");
+            }
             if let Some(error) = &settings.error {
                 ui.label(RichText::new(error).color(INVALID));
             }
@@ -2253,6 +2260,8 @@ fn settings_sections(
             }
             if choose {
                 SettingsAction::ChooseFolder
+            } else if choose_opus {
+                SettingsAction::ChooseOpusFolder
             } else {
                 SettingsAction::None
             }
@@ -2306,11 +2315,11 @@ fn settings_location(ui: &mut Ui, settings: &mut SettingsPane, profile: &Profile
     });
 }
 
-fn settings_folder(ui: &mut Ui, settings: &SettingsPane) -> bool {
+fn settings_folder(ui: &mut Ui, title: &str, folder: Option<&Path>) -> bool {
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
-        let label = caption(ui, "Default export folder", "");
-        let mut path = folder_name(settings.draft.folder.as_deref());
+        let label = caption(ui, title, "");
+        let mut path = folder_name(folder);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             let path_width = (ui.available_width() - 148.0).clamp(110.0, 360.0);

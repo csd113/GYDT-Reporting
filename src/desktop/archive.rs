@@ -54,9 +54,14 @@ pub(super) fn reopen(path: &Path, profile: &Profile) -> Result<Draft> {
     let id = manifest.validate(&members, profile.catalogue())?;
     let payload: Payload = serde_json::from_slice(member(&members, DATA)?)?;
     let stem = filename_stem(&payload.submission_number);
+    if members.keys().any(|name| {
+        name.ends_with(".0") && (stem != payload.submission_number || name != &format!("{stem}.0"))
+    }) {
+        return Err("The OPUS filename doesn't match the submission number.".into());
+    }
     let photo = members
         .iter()
-        .find(|(name, _)| *name != MANIFEST && *name != DATA)
+        .find(|(name, _)| photo_ext(name).is_some())
         .map(|(name, bytes)| {
             let extension = photo_ext(name).ok_or("The package photo must be a JPEG.")?;
             if name != &format!("{stem}.{extension}") {
@@ -84,12 +89,15 @@ fn read_members<R: std::io::Read + std::io::Seek>(
         let limit = match name.as_str() {
             MANIFEST => 8 * 1024,
             DATA => 64 * 1024,
+            _ if name.is_ascii() && !name.contains(['/', '\\']) && name.ends_with(".0") => {
+                gydt_results_compiler::MAX_OPUS_BYTES
+            }
             _ if name.is_ascii() && !name.contains(['/', '\\']) && photo_ext(&name).is_some() => {
                 MAX_JPEG
             }
             _ => return Err("The ZIP contains an unexpected file.".into()),
         };
-        if limit == MAX_JPEG
+        if photo_ext(&name).is_some()
             && members
                 .keys()
                 .any(|name: &String| photo_ext(name).is_some())
@@ -118,13 +126,13 @@ fn member<'a>(members: &'a BTreeMap<String, Vec<u8>>, name: &str) -> Result<&'a 
 }
 
 fn validate_archive(archive: &mut ZipArchive<Cursor<&[u8]>>, bytes: &[u8]) -> Result<()> {
-    if !(2..=3).contains(&archive.len())
+    if !(2..=4).contains(&archive.len())
         || archive.offset() != 0
         || archive.raw_zip64_extensible_data_sector().is_some()
         || archive.has_duplicate_names()
         || archive.has_overlapping_entries()?
     {
-        return Err("Choose a format-1 sample ZIP with two or three distinct files.".into());
+        return Err("Choose a format-1 sample ZIP with two to four distinct files.".into());
     }
     let central = usize::try_from(archive.central_directory_start())?;
     let footer_start = bytes

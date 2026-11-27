@@ -18,6 +18,10 @@ pub(super) struct Settings {
     pub(super) site: Site,
     pub(super) codes: [String; 2],
     pub(super) folder: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) attach_opus: bool,
+    #[serde(default)]
+    pub(super) opus_folder: Option<PathBuf>,
 }
 
 impl Settings {
@@ -27,6 +31,8 @@ impl Settings {
             codes: [CollectionSite::ExampleEast, CollectionSite::ExampleWest]
                 .map(|site| profile.site(site).code().into()),
             folder: None,
+            attach_opus: false,
+            opus_folder: None,
         }
     }
 
@@ -42,6 +48,12 @@ impl Settings {
         }
         if edited.folder != original.folder {
             next.folder.clone_from(&edited.folder);
+        }
+        if edited.attach_opus != original.attach_opus {
+            next.attach_opus = edited.attach_opus;
+        }
+        if edited.opus_folder != original.opus_folder {
+            next.opus_folder.clone_from(&edited.opus_folder);
         }
         for ((current, original), edited) in next
             .codes

@@ -185,6 +185,14 @@ impl PreparedExport {
 
     fn inspect_destination(&self, folder: &Path) -> Result<ConflictSnapshot, WriteError> {
         let (directory, identity) = open_directory(folder)?;
+        if self.opus_source.as_deref() == Some(&identity) {
+            return Err(preparation(
+                &directory,
+                io::Error::other(
+                    "Choose an export folder different from the OPUS folder. The source won't be overwritten.",
+                ),
+            ));
+        }
         let names: Vec<_> = self.filenames().map(str::to_owned).collect();
         let originals = retained_originals(&directory, &names)
             .map_err(|error| preparation(&directory, error))?;
@@ -683,6 +691,7 @@ mod tests {
                 bytes: b"new export".to_vec(),
             }],
             history: Vec::new(),
+            opus_source: None,
         }
     }
 

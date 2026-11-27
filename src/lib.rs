@@ -4,6 +4,7 @@ mod catalogue;
 mod draft;
 mod files;
 mod model;
+mod opus;
 mod package;
 mod photo;
 mod profile;
@@ -18,9 +19,10 @@ pub use model::{
     AdverseEvents, CollectionSite, Consumption, DEFAULT_SITE_CODE, DetectedResult, Percentage,
     Sample, StripResult, Strips, Substance, live_textures, new_sample_id,
 };
+pub use opus::{MAX_OPUS_BYTES, OpusSource};
 pub use package::{
     Contact, ExportHistoryEntry, ExportRequest, PreparedExport, prepare_export,
-    prepare_profile_export,
+    prepare_profile_export, prepare_profile_export_with_opus,
 };
 pub use photo::Photo;
 pub use profile::{Profile, SiteDefinition};
@@ -56,6 +58,8 @@ pub enum ExportError {
     MixedContactVisit,
     #[error("More than one output would use the filename {0}")]
     OutputNameConflict(String),
+    #[error("{0}")]
+    Opus(String),
     #[error("Unable to read JPEG {path}")]
     PhotoRead {
         path: PathBuf,

@@ -7,8 +7,8 @@ use std::{
 
 use eframe::egui;
 use gydt_results_compiler::{
-    ConflictSnapshot, Contact, ExportRequest, PreparedExport, Profile, WriteError, WriteSuccess,
-    prepare_profile_export,
+    ConflictSnapshot, Contact, ExportRequest, OpusSource, PreparedExport, Profile, WriteError,
+    WriteSuccess, prepare_profile_export_with_opus,
 };
 use jiff::Timestamp;
 
@@ -23,6 +23,11 @@ pub(super) struct Selection {
     pub(super) tabs: Vec<usize>,
     pub(super) wordpress_only: bool,
     pub(super) confirmed: bool,
+}
+
+pub(super) struct Destination {
+    pub(super) folder: PathBuf,
+    pub(super) opus_folder: Option<PathBuf>,
 }
 
 pub(super) struct Plan {
@@ -96,12 +101,19 @@ impl Worker {
         ctx: &egui::Context,
         selection: Selection,
         mut drafts: Vec<Draft>,
-        folder: PathBuf,
+        destination: Destination,
         history: Vec<History>,
         profile: Arc<Profile>,
     ) -> Result<()> {
         self.run(ctx, move || {
-            let result = prepare(&selection, &mut drafts, &folder, &history, &profile);
+            let result = prepare(
+                &selection,
+                &mut drafts,
+                &destination.folder,
+                &history,
+                &profile,
+                destination.opus_folder.as_deref(),
+            );
             Event::Prepared(selection, drafts, result)
         })
     }
@@ -164,6 +176,7 @@ pub(super) fn prepare(
     folder: &Path,
     history: &[History],
     profile: &Profile,
+    opus_folder: Option<&Path>,
 ) -> Result<Prepared> {
     let recipient = if selection.wordpress_only {
         None
@@ -191,7 +204,10 @@ pub(super) fn prepare(
     let contact = recipient.map_or(Contact::WordPressOnly, |(channel, address)| {
         channel.contact(address)
     });
-    let output = prepare_profile_export(
+    let opus = opus_folder
+        .map(|source| OpusSource::new(source, folder))
+        .transpose()?;
+    let output = prepare_profile_export_with_opus(
         &mut samples,
         profile,
         ExportRequest {
@@ -200,6 +216,7 @@ pub(super) fn prepare(
             history: &history,
             confirmed_reexports: &confirmed_reexports,
         },
+        opus.as_ref(),
     )?;
     for (draft, sample) in drafts.iter_mut().zip(samples) {
         draft.code_word = sample.code_word;
