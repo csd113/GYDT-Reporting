@@ -1,0 +1,25 @@
+name: Roll over development branch
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gydt-release-branch-rollover
+  cancel-in-progress: false
+
+jobs:
+  rollover:
+    if: github.event.release.draft == false && github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+      - run: python3 scripts/rollover-release-branches.py
