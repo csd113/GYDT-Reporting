@@ -1077,3 +1077,78 @@ fn old_folder_requires_same_day_explicit_selection() -> Result<()> {
     assert!(saved.settings.today_folder(today).is_none());
     Ok(())
 }
+
+#[test]
+fn linked_visit_contact_follows_actual_source_but_never_an_archive() -> Result<()> {
+    use super::{TabOrigin, analysis_day, export::Selection, ui};
+    let root = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(root.path())?;
+    let today = analysis_day()?;
+    let prefix = format!("3-990-{today}-");
+    let mut first = make_sample()?;
+    first.title = format!("{prefix}002");
+    first.analysis_date = today.to_string();
+    first.collection_date = today.to_string();
+    first.address = "primary@example.invalid".into();
+    let first_id = first.id;
+    app.tabs.clear();
+    app.push_tab(&ctx, first, TabOrigin::Recorded);
+    app.create_tab(&ctx, true)?;
+    let second = app.active.ok_or("Missing linked tab")?;
+    app.create_tab(&ctx, true)?;
+    let third = app.active.ok_or("Missing third tab")?;
+    for index in [second, third] {
+        let source = app.contact_source_index(index).ok_or("Missing source")?;
+        let tab = app.tabs.get(source).ok_or("Missing source tab")?;
+        assert_eq!(tab.draft.id, first_id);
+        assert_eq!(ui::short_tab(&tab.draft), "Sample 002");
+        assert_eq!(
+            app.tabs
+                .get(index)
+                .ok_or("Missing linked tab")?
+                .draft
+                .address,
+            ""
+        );
+    }
+    let selection = Selection {
+        tabs: vec![third],
+        wordpress_only: false,
+        confirmed: false,
+    };
+    let primary = app.tabs.first_mut().ok_or("Missing primary")?;
+    primary.draft.title = format!("{prefix}007");
+    primary.draft.address = "+1 (604) 555-0110".into();
+    primary.draft.channel = Channel::Text;
+    let resolved = app.export_drafts(&selection)?;
+    assert_eq!(
+        resolved.first().ok_or("Missing export draft")?.address,
+        "+1 (604) 555-0110"
+    );
+    let primary = app.tabs.first_mut().ok_or("Missing primary")?;
+    assert_eq!(ui::short_tab(&primary.draft), "Sample 007");
+    primary.draft.visit = "88".into();
+    assert!(app.export_drafts(&selection).is_err());
+    primary_for_archive(&mut app, first_id)?;
+    assert!(app.export_drafts(&selection).is_err());
+    let wordpress = Selection {
+        wordpress_only: true,
+        ..selection
+    };
+    assert_eq!(
+        app.export_drafts(&wordpress)?
+            .first()
+            .ok_or("Missing sample")?
+            .address,
+        ""
+    );
+    Ok(())
+}
+
+fn primary_for_archive(app: &mut super::App, id: uuid::Uuid) -> Result<()> {
+    let primary = app.tabs.first_mut().ok_or("Missing primary")?;
+    assert_eq!(primary.draft.id, id);
+    primary.draft.visit = "7".into();
+    primary.origin = super::TabOrigin::Archive;
+    Ok(())
+}

@@ -346,6 +346,17 @@ impl App {
                 }
                 self.notice("Can't change the sample site", error.to_string());
             }
+            if edit.contact == Some(ContactEdit::Open)
+                && let Some(source) = self.contact_source_index(index)
+            {
+                self.select_tab(ctx, source);
+                return;
+            }
+            if edit.contact == Some(ContactEdit::Detach)
+                && let Some(tab) = self.tabs.get_mut(index)
+            {
+                tab.contact_source = None;
+            }
             if edit.date_changed {
                 self.rescan();
             }
@@ -369,6 +380,11 @@ impl App {
     fn report_body(&mut self, ui: &mut Ui) -> Option<(usize, FormEdit)> {
         let height = (ui.available_height() - FOOTER_HEIGHT).max(64.0);
         let width = ui.available_width();
+        let source_label = self
+            .active
+            .and_then(|index| self.contact_source_index(index))
+            .and_then(|source| self.tabs.get(source))
+            .map(|source| short_tab(&source.draft));
         let Some((index, tab)) = self
             .active
             .and_then(|index| self.tabs.get_mut(index).map(|tab| (index, tab)))
@@ -401,7 +417,14 @@ impl App {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.push_id(("sample", index), |ui| {
-                                sample_form(ui, tab, &self.options, folder_chosen, &self.profile)
+                                sample_form(
+                                    ui,
+                                    tab,
+                                    &self.options,
+                                    folder_chosen,
+                                    &self.profile,
+                                    source_label.as_deref(),
+                                )
                             })
                             .inner
                         })
@@ -654,7 +677,7 @@ fn resize_view(ctx: &Context, settings: bool) {
     }
 }
 
-fn short_tab(draft: &Draft) -> String {
+pub(super) fn short_tab(draft: &Draft) -> String {
     let standard = draft
         .title
         .strip_prefix("3-")
@@ -829,11 +852,18 @@ enum TabAction {
     Batch,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ContactEdit {
+    Open,
+    Detach,
+}
+
 #[derive(Default)]
 struct FormEdit {
     date_changed: bool,
     prior_site: Option<Site>,
     photo: bool,
+    contact: Option<ContactEdit>,
 }
 
 fn sample_form(
@@ -842,6 +872,7 @@ fn sample_form(
     options: &[SubstanceChoice],
     folder_chosen: bool,
     profile: &Profile,
+    contact_label: Option<&str>,
 ) -> FormEdit {
     let before = tab.draft.clone();
     let tab_missing = tab.missing;
@@ -857,7 +888,23 @@ fn sample_form(
         })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            contact(ui, &mut tab.draft);
+            if tab.contact_source.is_some() {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(label) = contact_label {
+                        ui.label("Same contact as");
+                        if ui.link(label).clicked() {
+                            outcome.contact = Some(ContactEdit::Open);
+                        }
+                    } else {
+                        ui.label("Original contact sample is closed or the visit details changed.");
+                    }
+                    if ui.button("Use separate contact").clicked() {
+                        outcome.contact = Some(ContactEdit::Detach);
+                    }
+                });
+            } else {
+                contact(ui, &mut tab.draft);
+            }
             ui.add_space(16.0);
             let columns = ui.available_width() - GUTTER;
             let draw = |ui: &mut Ui, first| {
@@ -2388,6 +2435,7 @@ fn completion_view(
 
 enum ModalAction {
     Keep,
+    WordPressOnly,
     Dismiss,
     Folder,
     Photo,
@@ -2433,6 +2481,12 @@ impl App {
             ModalAction::Keep => self.dialog = Some(dialog),
             ModalAction::Dismiss => {}
             ModalAction::Folder => self.choose_folder(false),
+            ModalAction::WordPressOnly => {
+                if let Dialog::ContactUnavailable(mut selection) = dialog {
+                    selection.wordpress_only = true;
+                    self.begin_export(ctx, selection);
+                }
+            }
             ModalAction::Photo => self.choose_photo(ctx),
             ModalAction::Replace => {
                 if let Dialog::ReplacePhoto(index, photo) = dialog {
@@ -2509,6 +2563,11 @@ impl App {
                 })
                 .inner
             }
+            Dialog::ContactUnavailable(_) => {
+                modal_title(ui, "The visit contact is unavailable");
+                ui.label("Return to the first sample if it’s still open, or enter separate contact details. You can also export the Results ZIP without a client draft.");
+                dialog_buttons(ui, "Back", "WordPress only", ModalAction::WordPressOnly)
+            }
             Dialog::Batch(selected, wordpress_only) => {
                 self.batch_picker(ui, selected, wordpress_only)
             }
@@ -2564,15 +2623,28 @@ impl App {
             }
         });
         ui.checkbox(wordpress_only, "WordPress only");
-        let drafts = selected
+        let tabs = selected
             .iter()
-            .zip(&self.tabs)
-            .filter_map(|(chosen, tab)| chosen.then_some(&tab.draft));
-        let first = drafts.clone().next();
+            .enumerate()
+            .filter_map(|(i, selected)| selected.then_some(i))
+            .collect::<Vec<_>>();
+        let first = tabs
+            .first()
+            .and_then(|i| self.tabs.get(*i))
+            .map(|tab| &tab.draft);
+        let selection = ExportSelection {
+            tabs,
+            wordpress_only: *wordpress_only,
+            confirmed: false,
+        };
+        let drafts = self.export_drafts(&selection);
         let recipient = if *wordpress_only {
             Ok(None)
         } else {
-            export::batch_recipient(drafts)
+            drafts
+                .as_ref()
+                .map_err(|e| *e)
+                .and_then(|drafts| export::batch_recipient(drafts))
         };
         match (first, recipient) {
             (Some(first), Ok(Some((channel, address)))) => {
@@ -2621,6 +2693,7 @@ fn dialog_key(dialog: &Dialog) -> &'static str {
         Dialog::PhotoPrompt => "photo reminder",
         Dialog::ReplacePhoto(..) => "replace photo",
         Dialog::PhotoOptions => "photo menu",
+        Dialog::ContactUnavailable(_) => "unavailable contact",
         Dialog::Batch(..) => "sample selection",
         Dialog::Repeat(..) => "re-export warning",
         Dialog::Overwrite(..) => "overwrite warning",

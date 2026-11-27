@@ -101,6 +101,30 @@ struct Tab {
     missing: bool,
     changed: Option<Instant>,
     thumbnail: Option<egui::TextureHandle>,
+    contact_source: Option<ContactSource>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct VisitKey {
+    site: Site,
+    day: Date,
+    visit: u32,
+}
+
+impl VisitKey {
+    fn of(draft: &Draft) -> Option<Self> {
+        Some(Self {
+            site: draft.site,
+            day: valid_date(&draft.analysis_date)?,
+            visit: parse_visit(&draft.visit)?,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ContactSource {
+    id: uuid::Uuid,
+    visit: VisitKey,
 }
 
 impl Tab {
@@ -115,6 +139,7 @@ impl Tab {
             missing: false,
             changed: None,
             thumbnail,
+            contact_source: None,
         }
     }
 
@@ -134,6 +159,7 @@ enum Dialog {
     PhotoPrompt,
     ReplacePhoto(usize, PendingPhoto),
     PhotoOptions,
+    ContactUnavailable(Selection),
     Batch(Vec<bool>, bool),
     Repeat(Selection, Vec<String>),
     Overwrite(Selection, Box<Plan>),
@@ -274,33 +300,82 @@ impl App {
         }
     }
 
-    fn active_intake(&self, day: Date) -> Option<(Site, u32)> {
-        let tab = self.tabs.get(self.active?)?;
-        if tab.origin.is_provisional() || valid_date(&tab.draft.analysis_date) != Some(day) {
+    fn contact_source_index(&self, index: usize) -> Option<usize> {
+        let tab = self.tabs.get(index)?;
+        let contact = tab.contact_source?;
+        if VisitKey::of(&tab.draft) != Some(contact.visit) {
             return None;
         }
-        Some((tab.draft.site, parse_visit(&tab.draft.visit)?))
+        let mut sources = self.tabs.iter().enumerate().filter(|(candidate, tab)| {
+            *candidate != index
+                && tab.origin != TabOrigin::Archive
+                && tab.contact_source.is_none()
+                && tab.draft.id == contact.id
+                && VisitKey::of(&tab.draft) == Some(contact.visit)
+        });
+        let (source, _) = sources.next()?;
+        sources.next().is_none().then_some(source)
+    }
+
+    fn active_intake(&self, day: Date) -> Option<ContactSource> {
+        let index = self.active?;
+        let tab = self.tabs.get(index)?;
+        let visit = VisitKey::of(&tab.draft)?;
+        if tab.origin == TabOrigin::Archive || visit.day != day {
+            return None;
+        }
+        if let Some(link) = tab.contact_source {
+            let _ = self.contact_source_index(index)?;
+            Some(link)
+        } else if !tab.origin.is_provisional() {
+            Some(ContactSource {
+                id: tab.draft.id,
+                visit,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn export_drafts(
+        &self,
+        selection: &Selection,
+    ) -> std::result::Result<Vec<Draft>, &'static str> {
+        selection.tabs.iter().map(|&index| {
+            let tab = self.tabs.get(index).ok_or("Open the sample again before exporting.")?;
+            let mut draft = tab.draft.clone();
+            if tab.contact_source.is_some() && !selection.wordpress_only {
+                let source = self.contact_source_index(index).and_then(|source| self.tabs.get(source))
+                    .ok_or("The first sample is closed or its visit has changed. Open it to use its contact, detach this sample to enter contact details, or export WordPress only.")?;
+                draft.channel = source.draft.channel;
+                draft.address.clone_from(&source.draft.address);
+            }
+            Ok(draft)
+        }).collect()
     }
 
     fn create_tab(&mut self, ctx: &Context, same_visit: bool) -> Result<()> {
         self.flush(true)?;
         let day = analysis_day()?;
         self.rescan();
-        let (mut draft, origin) = if same_visit {
-            let (site, visit) = self
+        let (mut draft, origin, source) = if same_visit {
+            let source = self
                 .active_intake(day)
                 .ok_or("Open a started sample from today's intake first.")?;
-            let mut draft = Draft::fresh(site, day)?;
-            draft.visit = visit.to_string();
-            (draft, TabOrigin::SameVisit)
+            let mut draft = Draft::fresh(source.visit.site, day)?;
+            draft.visit = source.visit.visit.to_string();
+            (draft, TabOrigin::SameVisit, Some(source))
         } else {
             let site = self.book.settings.site;
             let mut draft = Draft::fresh(site, day)?;
             draft.suggest_visit(self.book.proposed_visit(site, day, &self.records)?);
-            (draft, TabOrigin::Proposed)
+            (draft, TabOrigin::Proposed, None)
         };
         self.suggest_title(&mut draft);
         self.push_tab(ctx, draft, origin);
+        if let Some(tab) = self.tabs.last_mut() {
+            tab.contact_source = source;
+        }
         self.dialog = Some(Dialog::PhotoPrompt);
         Ok(())
     }
@@ -793,12 +868,10 @@ impl App {
             return;
         };
         self.rescan();
-        let drafts: Vec<_> = selection
-            .tabs
-            .iter()
-            .filter_map(|index| self.tabs.get(*index))
-            .map(|tab| tab.draft.clone())
-            .collect();
+        let Ok(drafts) = self.export_drafts(&selection) else {
+            self.dialog = Some(Dialog::ContactUnavailable(selection));
+            return;
+        };
         let repeats: Vec<_> = drafts
             .iter()
             .filter(|draft| {
