@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt, fs,
+    fs::OpenOptions,
     io::{self, Read as _, Write as _},
     path::{Path, PathBuf},
     time::SystemTime,
@@ -14,6 +15,7 @@ use crate::PreparedExport;
 
 const STAGING_PREFIX: &str = ".gydt-export-";
 const STAGING_SUFFIX_LEN: usize = 6;
+const LOCAL_STAGING: &str = ".gydt-export-work";
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
@@ -159,7 +161,23 @@ impl PreparedExport {
     /// conflicting path that is not a regular file. Also reports active writes
     /// and retained originals for the selected outputs.
     pub fn inspect_folder(&self, folder: &Path) -> Result<ConflictSnapshot, WriteError> {
-        self.inspect_guarded(folder, false)
+        self.inspect_guarded(folder, false, None)
+            .map(|(snapshot, _)| snapshot)
+    }
+
+    /// Inspects the destination and any recovery files in app-local staging.
+    ///
+    /// # Errors
+    /// Returns an error if either folder is inaccessible, unsafe, on different
+    /// volumes, or contains an unresolved recovery for these outputs.
+    pub fn inspect_with_local_staging(
+        &self,
+        folder: &Path,
+        app_data: &Path,
+    ) -> Result<ConflictSnapshot, WriteError> {
+        let stage = local_stage(folder, app_data)?;
+        let _lock = stage_lock(&stage)?;
+        self.inspect_guarded(folder, false, Some(&stage))
             .map(|(snapshot, _)| snapshot)
     }
 
@@ -167,13 +185,14 @@ impl PreparedExport {
         &self,
         folder: &Path,
         exclusive: bool,
+        stage: Option<&Path>,
     ) -> Result<(ConflictSnapshot, Handle), WriteError> {
         let (directory, guard) = open_directory(folder)?;
         #[cfg(unix)]
         lock_directory(&directory, &guard, exclusive)?;
         #[cfg(not(unix))]
         let _ = exclusive;
-        let snapshot = self.inspect_destination(&directory)?;
+        let snapshot = self.inspect_destination(&directory, stage)?;
         if snapshot.directory != directory || snapshot.identity != guard {
             return Err(preparation(
                 &directory,
@@ -183,7 +202,11 @@ impl PreparedExport {
         Ok((snapshot, guard))
     }
 
-    fn inspect_destination(&self, folder: &Path) -> Result<ConflictSnapshot, WriteError> {
+    fn inspect_destination(
+        &self,
+        folder: &Path,
+        stage: Option<&Path>,
+    ) -> Result<ConflictSnapshot, WriteError> {
         let (directory, identity) = open_directory(folder)?;
         if self.opus_source.as_deref() == Some(&identity) {
             return Err(preparation(
@@ -194,8 +217,14 @@ impl PreparedExport {
             ));
         }
         let names: Vec<_> = self.filenames().map(str::to_owned).collect();
-        let originals = retained_originals(&directory, &names)
+        // Old work folders are observed only and never moved or removed.
+        let mut originals = retained_originals(&directory, &names)
             .map_err(|error| preparation(&directory, error))?;
+        if let Some(stage) = stage {
+            originals.extend(
+                retained_originals(stage, &names).map_err(|error| preparation(stage, error))?,
+            );
+        }
         if !originals.is_empty() {
             return Err(RecoveryRequired { originals }.into());
         }
@@ -225,22 +254,53 @@ impl PreparedExport {
         folder: &Path,
         approval: Option<&ConflictSnapshot>,
     ) -> Result<WriteSuccess, WriteError> {
-        let (current, _guard) = self.inspect_guarded(folder, true)?;
+        self.write_staged(folder, approval, None)
+    }
+
+    /// Stages private temporary files and retained originals under app data.
+    ///
+    /// # Errors
+    /// The same errors as `write`; in addition, publication is refused
+    /// before changing an output when the app data and destination cannot
+    /// be verified on the same volume.
+    pub fn write_with_local_staging(
+        &self,
+        folder: &Path,
+        approval: Option<&ConflictSnapshot>,
+        app_data: &Path,
+    ) -> Result<WriteSuccess, WriteError> {
+        let stage = local_stage(folder, app_data)?;
+        let _lock = stage_lock(&stage)?;
+        self.write_staged(folder, approval, Some(&stage))
+    }
+
+    fn write_staged(
+        &self,
+        folder: &Path,
+        approval: Option<&ConflictSnapshot>,
+        stage_home: Option<&Path>,
+    ) -> Result<WriteSuccess, WriteError> {
+        let (current, _guard) = self.inspect_guarded(folder, true, stage_home)?;
         if approval.map_or(!current.existing.is_empty(), |approved| {
             *approved != current
         }) {
             return Err(WriteError::Conflicts(current));
         }
 
-        let mut stage = Staging::new(&current)?;
-        let result = self.publish(folder, &mut stage);
+        let mut stage = Staging::new_in(&current, stage_home.unwrap_or(&current.directory))?;
+        let result = self.publish(folder, &mut stage, stage_home);
         stage.finish(result)
     }
 
-    fn publish(&self, folder: &Path, stage: &mut Staging<'_>) -> Result<(), WriteError> {
+    fn publish(
+        &self,
+        folder: &Path,
+        stage: &mut Staging<'_>,
+        stage_home: Option<&Path>,
+    ) -> Result<(), WriteError> {
         let staged = stage.prepare(&self.outputs)?;
         // The write-side destination lock is already held.
-        let fresh = self.inspect_destination(folder)?;
+        let fresh = self.inspect_destination(folder, stage_home)?;
         if fresh != *stage.destination {
             return Err(WriteError::Conflicts(fresh));
         }
@@ -251,6 +311,118 @@ impl PreparedExport {
         }
         Ok(())
     }
+}
+
+fn local_stage(folder: &Path, app_data: &Path) -> Result<PathBuf, WriteError> {
+    let (directory, _) = open_directory(folder)?;
+    let (app_data, _) = open_directory(app_data)?;
+    let parent = app_data.join(LOCAL_STAGING);
+    if directory == app_data || directory.starts_with(&parent) {
+        return Err(preparation(
+            &directory,
+            io::Error::other("Choose an export folder outside the app’s private staging area."),
+        ));
+    }
+    if !same_volume(&directory, &app_data).map_err(|error| preparation(&directory, error))? {
+        return Err(preparation(
+            &directory,
+            io::Error::other(
+                "The export folder is on a different volume from the app’s data folder. Choose a folder on the same volume to export safely.",
+            ),
+        ));
+    }
+    ensure_private_directory(&parent).map_err(|error| preparation(&parent, error))?;
+    let key = crate::sha256(directory.as_os_str().as_encoded_bytes());
+    let stage = parent.join(key);
+    ensure_private_directory(&stage).map_err(|error| preparation(&stage, error))?;
+    if !same_volume(&directory, &stage).map_err(|error| preparation(&stage, error))? {
+        return Err(preparation(
+            &stage,
+            io::Error::other("The private staging area is on a different volume."),
+        ));
+    }
+    Ok(stage)
+}
+
+fn ensure_private_directory(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = path.symlink_metadata()?;
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(io::Error::other(
+                "The private staging directory is a reparse point.",
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(io::Error::other(
+                "The private staging directory is not private.",
+            ));
+        }
+    }
+    if !metadata.is_dir() || path.canonicalize()? != path {
+        return Err(io::Error::other(
+            "The private staging directory is not an ordinary directory.",
+        ));
+    }
+    Ok(())
+}
+
+fn stage_lock(stage: &Path) -> Result<fs::File, WriteError> {
+    let path = stage.join("export.lock");
+    if entry_metadata(&path)
+        .map_err(|error| preparation(&path, error))?
+        .is_some_and(|m| !m.is_file())
+    {
+        return Err(preparation(
+            &path,
+            io::Error::other("The staging lock is not an ordinary file."),
+        ));
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|error| preparation(&path, error))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(fs::TryLockError::WouldBlock) => Err(WriteError::ExportInProgress),
+        Err(fs::TryLockError::Error(error)) => Err(preparation(&path, error)),
+    }
+}
+
+#[cfg(unix)]
+fn same_volume(left: &Path, right: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(left.metadata()?.dev() == right.metadata()?.dev())
+}
+
+#[cfg(windows)]
+fn same_volume(left: &Path, right: &Path) -> io::Result<bool> {
+    fn root(path: &Path) -> io::Result<String> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| io::Error::other("Cannot identify the volume."))?;
+        winsafe::GetVolumePathName(path).map_err(io::Error::other)
+    }
+    same_file::is_same_file(root(left)?, root(right)?)
 }
 
 fn open_directory(folder: &Path) -> Result<(PathBuf, Handle), WriteError> {
@@ -334,6 +506,7 @@ struct Staging<'a> {
     destination: &'a ConflictSnapshot,
     originals: Vec<Original<'a>>,
     written: Vec<PathBuf>,
+    pending_files: Vec<(PathBuf, Handle)>,
 }
 
 struct Original<'a> {
@@ -345,7 +518,12 @@ struct Original<'a> {
 }
 
 impl<'a> Staging<'a> {
+    #[cfg(test)]
     fn new(destination: &'a ConflictSnapshot) -> Result<Self, WriteError> {
+        Self::new_in(destination, &destination.directory)
+    }
+
+    fn new_in(destination: &'a ConflictSnapshot, home: &Path) -> Result<Self, WriteError> {
         let mut builder = tempfile::Builder::new();
         #[cfg(unix)]
         {
@@ -357,7 +535,7 @@ impl<'a> Staging<'a> {
             .prefix(STAGING_PREFIX)
             .rand_bytes(STAGING_SUFFIX_LEN)
             .disable_cleanup(true)
-            .tempdir_in(&destination.directory)
+            .tempdir_in(home)
             .map_err(|error| preparation(&destination.directory, error))?;
         let identity = match Handle::from_path(directory.path()) {
             Ok(identity) => identity,
@@ -378,11 +556,12 @@ impl<'a> Staging<'a> {
             destination,
             originals: Vec::new(),
             written: Vec::new(),
+            pending_files: Vec::new(),
         })
     }
 
     fn prepare(
-        &self,
+        &mut self,
         outputs: &[crate::package::Artifact],
     ) -> Result<Vec<NamedTempFile>, WriteError> {
         let root = self.directory.path();
@@ -404,6 +583,13 @@ impl<'a> Staging<'a> {
                     .disable_cleanup(true)
                     .tempfile_in(&pending)
                     .map_err(|error| preparation(&path, error))?;
+                let identity = Handle::from_file(
+                    file.as_file()
+                        .try_clone()
+                        .map_err(|error| preparation(&path, error))?,
+                )
+                .map_err(|error| preparation(&path, error))?;
+                self.pending_files.push((file.path().to_owned(), identity));
                 file.write_all(&output.bytes)
                     .and_then(|()| file.as_file().sync_all())
                     .map_err(|error| preparation(&path, error))?;
@@ -498,10 +684,21 @@ impl<'a> Staging<'a> {
         }
     }
 
-    fn clean_directories(&self) -> io::Result<()> {
+    fn clean_directories(&mut self) -> io::Result<()> {
         self.check()?;
         let root = self.directory.path();
-        ignore_missing(fs::remove_dir_all(root.join("pending")))?;
+        for (file, identity) in self.pending_files.drain(..) {
+            if let Some(meta) = entry_metadata(&file)? {
+                if !meta.is_file() || Handle::from_path(&file)? != identity {
+                    return Err(io::Error::other(
+                        "An unrecognized file was left in staging.",
+                    ));
+                }
+                drop(identity);
+                fs::remove_file(file)?;
+            }
+        }
+        ignore_missing(fs::remove_dir(root.join("pending")))?;
         if self.originals.iter().any(|original| !original.released) {
             return Ok(());
         }
@@ -696,6 +893,71 @@ mod tests {
     }
 
     #[test]
+    fn desktop_staging_publishes_and_preserves_old_work_in_both_folders() -> TestResult {
+        let app = tempfile::tempdir()?;
+        let destination = tempfile::tempdir()?;
+        let old = destination.path().join(".gydt-export-abcdef");
+        fs::create_dir(&old)?;
+        fs::write(old.join("keep.txt"), b"existing work")?;
+        let app_file = app.path().join("keep.txt");
+        fs::write(&app_file, b"settings data")?;
+        let plan = plan();
+        let first = plan.inspect_with_local_staging(destination.path(), app.path())?;
+        assert_eq!(first.filenames().len(), 0);
+        assert!(
+            plan.write_with_local_staging(destination.path(), None, app.path())?
+                .cleanup_warning
+                .is_none()
+        );
+        let target = destination.path().join(OUTPUT);
+        fs::write(&target, b"approved original")?;
+        let snapshot = plan.inspect_with_local_staging(destination.path(), app.path())?;
+        assert_eq!(snapshot.filenames().len(), 1);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            let locked = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(&target)?;
+            assert!(
+                plan.write_with_local_staging(destination.path(), Some(&snapshot), app.path())
+                    .is_err()
+            );
+            assert_eq!(fs::read(&target)?, b"approved original");
+            drop(locked);
+        }
+        assert!(
+            plan.write_with_local_staging(destination.path(), Some(&snapshot), app.path())?
+                .cleanup_warning
+                .is_none()
+        );
+        assert_eq!(fs::read(&target)?, b"new export");
+        assert_eq!(fs::read(old.join("keep.txt"))?, b"existing work");
+        assert_eq!(fs::read(&app_file)?, b"settings data");
+        assert_eq!(fs::read_dir(destination.path())?.count(), 2);
+        let stage_home = super::local_stage(destination.path(), app.path())?;
+        assert_eq!(fs::read_dir(&stage_home)?.count(), 1); // only the app lock file
+        let approved = plan.inspect_with_local_staging(destination.path(), app.path())?;
+        let mut stage = Staging::new_in(&approved, &stage_home)?;
+        let _pending = stage.prepare(&plan.outputs)?;
+        stage.capture(
+            OUTPUT,
+            approved.existing.get(OUTPUT).ok_or("missing conflict")?,
+        )?;
+        assert!(matches!(
+            plan.inspect_with_local_staging(destination.path(), app.path()),
+            Err(WriteError::RecoveryRequired(_))
+        ));
+        assert_eq!(
+            fs::read(stage.directory.path().join("originals").join(OUTPUT))?,
+            b"new export"
+        );
+        assert_eq!(fs::read_dir(destination.path())?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn original_survives_an_abandoned_overwrite_and_is_discoverable() -> TestResult {
         let directory = tempfile::tempdir()?;
         let target = directory.path().join(OUTPUT);
@@ -726,7 +988,7 @@ mod tests {
         let target = directory.path().join(OUTPUT);
         fs::write(&target, b"approved original")?;
         let plan = plan();
-        let (snapshot, guard) = plan.inspect_guarded(directory.path(), true)?;
+        let (snapshot, guard) = plan.inspect_guarded(directory.path(), true, None)?;
         let mut stage = Staging::new(&snapshot)?;
         let _pending = stage.prepare(&plan.outputs)?;
         stage.capture(
@@ -770,7 +1032,7 @@ mod tests {
         let original = prior_stage.directory.path().join("originals").join(OUTPUT);
         drop(prior_stage);
 
-        let outcome = plan.publish(directory.path(), &mut new_stage);
+        let outcome = plan.publish(directory.path(), &mut new_stage, None);
         let Err(WriteError::RecoveryRequired(found)) = new_stage.finish(outcome) else {
             return Err("publication bypassed the newly retained original".into());
         };
@@ -914,7 +1176,7 @@ mod tests {
             let mut stage = Staging::new(&snapshot)?;
             let root = stage.directory.path().to_owned();
             let outcome = if succeeds {
-                plan.publish(directory.path(), &mut stage)
+                plan.publish(directory.path(), &mut stage, None)
             } else {
                 Err(preparation(
                     directory.path(),

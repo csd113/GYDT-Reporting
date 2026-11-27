@@ -835,6 +835,7 @@ impl App {
             drafts,
             export::Destination {
                 folder,
+                app_data: self.store.data_folder().to_owned(),
                 opus_folder,
             },
             self.book.history.clone(),

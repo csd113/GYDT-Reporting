@@ -27,12 +27,14 @@ pub(super) struct Selection {
 
 pub(super) struct Destination {
     pub(super) folder: PathBuf,
+    pub(super) app_data: PathBuf,
     pub(super) opus_folder: Option<PathBuf>,
 }
 
 pub(super) struct Plan {
     pub(super) approved: ConflictSnapshot,
     output: PreparedExport,
+    app_data: Option<PathBuf>,
     drafts: Vec<Draft>,
 }
 
@@ -106,13 +108,14 @@ impl Worker {
         profile: Arc<Profile>,
     ) -> Result<()> {
         self.run(ctx, move || {
-            let result = prepare(
+            let result = prepare_at(
                 &selection,
                 &mut drafts,
                 &destination.folder,
                 &history,
                 &profile,
                 destination.opus_folder.as_deref(),
+                Some(&destination.app_data),
             );
             Event::Prepared(selection, drafts, result)
         })
@@ -147,7 +150,12 @@ impl Plan {
     }
 
     pub(super) fn write(&self) -> std::result::Result<WriteSuccess, WriteError> {
-        self.output.write(self.folder(), Some(&self.approved))
+        if let Some(app_data) = &self.app_data {
+            self.output
+                .write_with_local_staging(self.folder(), Some(&self.approved), app_data)
+        } else {
+            self.output.write(self.folder(), Some(&self.approved))
+        }
     }
 }
 
@@ -170,6 +178,7 @@ pub(super) fn batch_recipient<'a>(
     Ok(recipient)
 }
 
+#[cfg(test)]
 pub(super) fn prepare(
     selection: &Selection,
     drafts: &mut [Draft],
@@ -177,6 +186,26 @@ pub(super) fn prepare(
     history: &[History],
     profile: &Profile,
     opus_folder: Option<&Path>,
+) -> Result<Prepared> {
+    prepare_at(
+        selection,
+        drafts,
+        folder,
+        history,
+        profile,
+        opus_folder,
+        None,
+    )
+}
+
+fn prepare_at(
+    selection: &Selection,
+    drafts: &mut [Draft],
+    folder: &Path,
+    history: &[History],
+    profile: &Profile,
+    opus_folder: Option<&Path>,
+    app_data: Option<&Path>,
 ) -> Result<Prepared> {
     let recipient = if selection.wordpress_only {
         None
@@ -221,10 +250,15 @@ pub(super) fn prepare(
     for (draft, sample) in drafts.iter_mut().zip(samples) {
         draft.code_word = sample.code_word;
     }
-    let approved = output.inspect_folder(folder)?;
+    let approved = if let Some(app_data) = app_data {
+        output.inspect_with_local_staging(folder, app_data)?
+    } else {
+        output.inspect_folder(folder)?
+    };
     let plan = Plan {
         approved,
         output,
+        app_data: app_data.map(Path::to_owned),
         drafts: drafts.to_vec(),
     };
     let needs_confirmation = check_existing(&plan, profile)?;

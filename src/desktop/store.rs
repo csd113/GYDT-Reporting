@@ -281,6 +281,10 @@ impl Store {
         Ok(())
     }
 
+    pub(super) fn data_folder(&self) -> &Path {
+        &self.root
+    }
+
     pub(super) fn book(&self, profile: &Profile) -> Result<Book> {
         let path = self.root.join("book.json");
         let book = load::<Book>(&path)?.unwrap_or_else(|| Book::for_profile(profile));
