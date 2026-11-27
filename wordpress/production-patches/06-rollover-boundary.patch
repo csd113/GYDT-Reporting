@@ -1,0 +1,15 @@
+diff --git a/import-history.php b/import-history.php
+--- a/import-history.php
++++ b/import-history.php
+@@ -17,6 +17,11 @@
+     public static function clock(?DateTimeImmutable $now = null): array
+     {
+         $local = Import::exportLocalTime($now ?? new DateTimeImmutable(), new DateTimeZone('America/Vancouver'));
++        // Before the skipped 2026 rollback, a stale zone still predicts a
++        // 25-hour day even though Vancouver's next midnight is at UTC-07.
++        if ($local->format('Y-m-d') === '2026-11-01') {
++            $local = $local->setTimezone(new DateTimeZone('-07:00'));
++        }
+         return [
+             'day' => $local->format('Y-m-d'),
+             'seconds_to_midnight' => $local->modify('tomorrow midnight')->getTimestamp() - $local->getTimestamp(),

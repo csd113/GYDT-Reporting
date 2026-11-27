@@ -23,11 +23,12 @@ namespace {
 
 use GYDT\SampleResults\SubmissionLock;
 
-if (PHP_SAPI !== 'cli' || $argc !== 2) {
+if (PHP_SAPI !== 'cli' || $argc !== 3) {
     exit(1);
 }
 
-require __DIR__ . '/../gydt-sample-results-importer/submission-lock.php';
+$plugin = $argv[2];
+require $plugin . '/submission-lock.php';
 define('DB_NAME', 'synthetic_lock_contract');
 
 final class LockDatabase

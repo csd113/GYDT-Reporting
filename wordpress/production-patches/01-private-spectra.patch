@@ -1,0 +1,300 @@
+diff --git a/contract.php b/contract.php
+--- a/contract.php
++++ b/contract.php
+@@ -64,0 +65,3 @@
++        public readonly ?string $spectrum,
++        public readonly ?string $spectrumName,
++        public readonly ?string $spectrumHash,
+@@ -91 +94,5 @@
+-            $memberLabels[$name] = $name === 'test_data.json' ? 'test_data.json entry' : 'Sample JPEG entry';
++            $memberLabels[$name] = match (true) {
++                $name === 'test_data.json' => 'test_data.json entry',
++                str_ends_with($name, '.0') => 'OPUS spectrum entry',
++                default => 'Sample JPEG entry',
++            };
+@@ -110,11 +117,27 @@
+-        $photoNames = array_values(array_diff($members, ['test_data.json']));
+-        if ($photoNames) {
+-            $name = $photoNames[0];
+-            if (pathinfo($name, PATHINFO_FILENAME) !== self::filenameStem($data['submission_number'])) {
+-                throw new Rejection('The photo filename doesn’t match the submission number. Export the sample again.');
+-            }
+-            $photo = $content[$name];
+-            self::validatePhoto($photo);
+-            $photoHash = $files[$name]->sha256;
+-        }
+-
++        $spectrum = $spectrumName = $spectrumHash = null;
++        $submission = $data['submission_number'];
++        $stem = self::filenameStem($submission);
++        foreach (array_diff($members, ['test_data.json']) as $name) {
++            if (str_ends_with($name, '.0')) {
++                if ($stem !== $submission || str_ends_with(explode('.', $submission, 2)[0], ' ')
++                    || $name !== $submission . '.0') {
++                    throw new Rejection('The OPUS filename must exactly match the full submission number. Export the sample again.');
++                }
++                $spectrum = $content[$name];
++                $spectrumName = $name;
++                $spectrumHash = $files[$name]->sha256;
++            } else {
++                if (pathinfo($name, PATHINFO_FILENAME) !== $stem) {
++                    throw new Rejection('The photo filename doesn’t match the submission number. Export the sample again.');
++                }
++                $photo = $content[$name];
++                self::validatePhoto($photo);
++                $photoHash = $files[$name]->sha256;
++            }
++        }
++
++        // Leave the identity of every previously supported ZIP unchanged.
++        $fingerprint = ['data' => $payload, 'jpeg_sha256' => $photoHash];
++        if ($spectrumHash !== null) {
++            $fingerprint['opus_sha256'] = $spectrumHash;
++        }
+@@ -124 +147 @@
+-            hash('sha256', self::canonical((object) ['data' => $payload, 'jpeg_sha256' => $photoHash])),
++            hash('sha256', self::canonical((object) $fingerprint)),
+@@ -126,0 +150,3 @@
++            $spectrum,
++            $spectrumName,
++            $spectrumHash,
+diff --git a/gydt-sample-results-importer.php b/gydt-sample-results-importer.php
+--- a/gydt-sample-results-importer.php
++++ b/gydt-sample-results-importer.php
+@@ -5 +5 @@
+- * Version: 1.0.2
++ * Version: 1.0.3
+@@ -20,0 +21 @@
++require_once __DIR__ . '/spectrum.php';
+@@ -45,0 +47 @@
++Spectrum::register(__FILE__);
+diff --git a/import.php b/import.php
+--- a/import.php
++++ b/import.php
+@@ -113,0 +114,3 @@
++        if ($package->spectrum !== null) {
++            Spectrum::preflight(strlen($package->spectrum));
++        }
+@@ -284,0 +288,3 @@
++            if ($package->spectrum !== null) {
++                Spectrum::insert($postId, $package);
++            }
+@@ -715,0 +722,3 @@
++            }
++            if ($package->spectrum !== null && !Spectrum::matches($id, $package)) {
++                throw new UnknownOutcome();
+diff --git a/spectrum.php b/spectrum.php
+new file mode 100644
+--- /dev/null
++++ b/spectrum.php
+@@ -0,0 +1,182 @@
++<?php
++
++namespace GYDT\SampleResults;
++
++final class Spectrum
++{
++    private const ACTION = 'gydt_download_result_spectrum';
++    private const SCHEMA = 'gydt_spectrum_schema';
++    private const MAX_STORAGE = 1073741824;
++
++    public static function register(string $pluginFile): void
++    {
++        register_activation_hook($pluginFile, [self::class, 'install']);
++        add_action('admin_init', static function (): void {
++            if (current_user_can('activate_plugins') && get_option(self::SCHEMA) !== '1') {
++                self::install();
++            }
++        });
++        add_action('add_meta_boxes_results', [self::class, 'addBox']);
++        add_action('admin_post_' . self::ACTION, [self::class, 'download']);
++    }
++
++    private static function table(): string
++    {
++        global $wpdb;
++        return $wpdb->prefix . 'gydt_spectra';
++    }
++
++    public static function install(): void
++    {
++        global $wpdb;
++        // The FK follows only an actual permanent deletion of the exact
++        // parent row. Trash, edits, publication and failed deletes do nothing.
++        $previous = $wpdb->suppress_errors();
++        try {
++            $wpdb->query($wpdb->prepare(
++                'CREATE TABLE IF NOT EXISTS %i (
++                    result_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
++                    filename VARBINARY(82) NOT NULL,
++                    sha256 BINARY(64) NOT NULL,
++                    payload MEDIUMBLOB NOT NULL,
++                    FOREIGN KEY (result_id) REFERENCES %i (ID) ON DELETE CASCADE
++                ) ENGINE=InnoDB',
++                self::table(), $wpdb->posts
++            ));
++            if (self::ready()) {
++                update_option(self::SCHEMA, '1', false);
++            }
++        } finally {
++            $wpdb->suppress_errors($previous);
++        }
++    }
++
++    private static function ready(): bool
++    {
++        global $wpdb;
++        $row = $wpdb->get_row($wpdb->prepare(
++            "SELECT t.ENGINE, r.DELETE_RULE, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME
++             FROM information_schema.TABLES t
++             JOIN information_schema.KEY_COLUMN_USAGE k ON k.TABLE_SCHEMA=t.TABLE_SCHEMA AND k.TABLE_NAME=t.TABLE_NAME
++             JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA
++                AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME
++             WHERE t.TABLE_SCHEMA=DATABASE() AND t.TABLE_NAME=%s AND k.COLUMN_NAME='result_id'
++               AND k.REFERENCED_TABLE_SCHEMA=DATABASE()",
++            self::table()
++        ), ARRAY_A);
++        return $wpdb->last_error === '' && $row === [
++            'ENGINE' => 'InnoDB', 'DELETE_RULE' => 'CASCADE',
++            'REFERENCED_TABLE_NAME' => $wpdb->posts, 'REFERENCED_COLUMN_NAME' => 'ID',
++        ];
++    }
++
++    public static function preflight(int $bytes): void
++    {
++        global $wpdb;
++        if (get_option(self::SCHEMA) !== '1' || !self::ready()) {
++            throw new Rejection('Private spectrum storage is unavailable. Ask an administrator to check the importer setup.');
++        }
++        // Hex literals have no charset conversion and no binary data enters post meta.
++        $packet = $wpdb->get_var('SELECT @@session.max_allowed_packet');
++        if ($wpdb->last_error !== '' || !is_numeric($packet) || (int) $packet < $bytes * 2 + 8192) {
++            throw new Rejection('This spectrum is too large for the site’s private database storage.');
++        }
++        $used = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(SUM(OCTET_LENGTH(payload)), 0) FROM %i', self::table()));
++        if ($wpdb->last_error !== '' || !is_numeric($used) || (int) $used > self::MAX_STORAGE - $bytes) {
++            throw new Rejection('Private spectrum storage is full or unavailable. No draft was saved. Ask an administrator to check storage.');
++        }
++    }
++
++    public static function insert(int $id, Package $package): void
++    {
++        global $wpdb;
++        if (!Import::lockedTransaction() || $package->spectrum === null || $package->spectrumName === null
++            || $package->spectrumHash === null) {
++            throw new UnknownOutcome();
++        }
++        if ($wpdb->query($wpdb->prepare(
++            'INSERT INTO %i (result_id, filename, sha256, payload) VALUES (%d, %s, %s, UNHEX(%s))',
++            self::table(), $id, $package->spectrumName, $package->spectrumHash, bin2hex($package->spectrum)
++        )) !== 1 || !self::matches($id, $package)) {
++            throw new Rejection('WordPress could not verify the private spectrum. No draft was saved.');
++        }
++    }
++
++    public static function matches(int $id, Package $package): bool
++    {
++        global $wpdb;
++        $row = $wpdb->get_row($wpdb->prepare(
++            'SELECT filename, sha256, SHA2(payload, 256) AS actual FROM %i WHERE result_id=%d',
++            self::table(), $id
++        ), ARRAY_A);
++        return $wpdb->last_error === '' && $row !== null
++            && $row['filename'] === $package->spectrumName && $row['sha256'] === $package->spectrumHash
++            && $row['actual'] === $package->spectrumHash;
++    }
++
++    private static function allowed(\WP_Post $post): bool
++    {
++        return is_user_logged_in() && $post->post_type === 'results'
++            && !in_array($post->post_status, ['trash', 'auto-draft'], true)
++            && current_user_can('read_post', $post->ID) && current_user_can('edit_post', $post->ID)
++            && Import::verifiedCompletion($post->ID);
++    }
++
++    public static function addBox(\WP_Post $post): void
++    {
++        global $wpdb;
++        if (get_option(self::SCHEMA) !== '1' || !self::allowed($post)) {
++            return;
++        }
++        $previous = $wpdb->suppress_errors();
++        try {
++            $exists = $wpdb->get_var($wpdb->prepare('SELECT result_id FROM %i WHERE result_id=%d', self::table(), $post->ID));
++        } finally {
++            $wpdb->suppress_errors($previous);
++        }
++        if ((int) $exists !== $post->ID) {
++            return;
++        }
++        add_meta_box(
++            'gydt-private-spectrum', 'OPUS spectrum', static function (\WP_Post $result): void {
++                $url = add_query_arg(['action' => self::ACTION, 'result' => $result->ID], admin_url('admin-post.php'));
++                $url = wp_nonce_url($url, self::ACTION . ':' . $result->ID);
++                printf('<p><a class="button" href="%s">Download spectrum</a></p>', esc_url($url));
++                echo '<p>Available only to staff who can edit this Result.</p>';
++            }, 'results', 'side'
++        );
++    }
++
++    public static function download(): never
++    {
++        global $wpdb;
++        nocache_headers();
++        header('Cache-Control: private, no-store, max-age=0', true);
++        $id = positiveInteger($_GET['result'] ?? null);
++        $post = $id > 0 ? get_post($id) : null;
++        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'GET' || !$post || !self::allowed($post)
++            || !verifiedNonce($_GET['_wpnonce'] ?? null, self::ACTION . ':' . $id)
++            || get_option(self::SCHEMA) !== '1') {
++            wp_die('Spectrum unavailable.', '', ['response' => 404]);
++        }
++        $previous = $wpdb->suppress_errors();
++        try {
++            $row = $wpdb->get_row($wpdb->prepare(
++                'SELECT filename, sha256, payload FROM %i WHERE result_id=%d AND OCTET_LENGTH(payload) BETWEEN 1 AND %d',
++                self::table(), $id, Archive::MAX_SPECTRUM
++            ), ARRAY_A);
++        } finally {
++            $wpdb->suppress_errors($previous);
++        }
++        if (!$row || !preg_match('/\A[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}\.0\z/D', $row['filename'])
++            || !hash_equals($row['sha256'], hash('sha256', $row['payload']))) {
++            wp_die('Spectrum unavailable.', '', ['response' => 404]);
++        }
++        header('Content-Type: application/octet-stream');
++        header('X-Content-Type-Options: nosniff');
++        header('Content-Disposition: attachment; filename="' . $row['filename'] . '"');
++        header('Content-Length: ' . strlen($row['payload']));
++        echo $row['payload'];
++        exit;
++    }
++}
+diff --git a/zip.php b/zip.php
+--- a/zip.php
++++ b/zip.php
+@@ -8,0 +9 @@
++    public const MAX_SPECTRUM = 4 * 1024 * 1024;
+@@ -77,0 +79 @@
++        $photo = $spectrum = false;
+@@ -100,3 +102,11 @@
+-            $limit = self::LIMITS[$name] ?? self::MAX_PHOTO;
+-            if (!isset(self::LIMITS[$name]) && !preg_match('/\A[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}\.(?i:jpe?g)\z/D', $name)) {
+-                self::invalid();
++            $limit = self::LIMITS[$name] ?? null;
++            if ($limit === null) {
++                if (!$spectrum && preg_match('/\A[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}\.0\z/D', $name)) {
++                    $spectrum = true;
++                    $limit = self::MAX_SPECTRUM;
++                } elseif (!$photo && preg_match('/\A[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}\.(?i:jpe?g)\z/D', $name)) {
++                    $photo = true;
++                    $limit = self::MAX_PHOTO;
++                } else {
++                    self::invalid();
++                }
+@@ -113 +123 @@
+-        if ($cursor !== $end || $total > self::MAX_PHOTO + array_sum(self::LIMITS)
++        if ($cursor !== $end || $total > self::MAX_PHOTO + ($spectrum ? self::MAX_SPECTRUM : 0) + array_sum(self::LIMITS)
+@@ -136 +146 @@
+-                || $footer['local'] !== $footer['count'] || !in_array($footer['count'], [2, 3], true)
++                || $footer['local'] !== $footer['count'] || !in_array($footer['count'], [2, 3, 4], true)

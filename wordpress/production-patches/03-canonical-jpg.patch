@@ -1,0 +1,62 @@
+diff --git a/contract.php b/contract.php
+--- a/contract.php
++++ b/contract.php
+@@ -284 +284 @@
+-    private static function filenameStem(string $title): string
++    public static function filenameStem(string $title): string
+diff --git a/import.php b/import.php
+--- a/import.php
++++ b/import.php
+@@ -394,2 +394,2 @@
+-        // Use the normal WordPress upload path and image handling. The unique basename
+-        // confines cleanup to this upload and its native derivatives if the draft rolls back.
++        // Keep the validated submission basename. Refuse any collision rather than
++        // overwriting another import or silently giving the image a different name.
+@@ -398,2 +398,2 @@
+-        $name = 'gydt-sample-' . wp_generate_uuid4() . '.jpg';
+-        if ($directory === false || self::photoFiles($directory . '/' . $name) !== []) {
++        $name = Package::filenameStem($draft['post_title']) . '.jpg';
++        if ($directory === false) {
+@@ -400,0 +401,3 @@
++        }
++        if (self::photoFiles($directory . '/' . $name) !== []) {
++            throw new Rejection('A sample photo already uses this submission filename. The existing photo was not changed and no draft was saved.');
+@@ -407,6 +410,23 @@
+-        $verifyDestination = static function (mixed $move, array $upload, string $path) use ($tmp, $expected): mixed {
+-            if (($upload['tmp_name'] ?? null) === $tmp
+-                && (realpath(dirname($path)) . '/' . basename($path) !== $expected || $move !== null)) {
+-                throw new Rejection('WordPress couldn’t use its normal upload location. No draft was saved.');
+-            }
+-            return $move;
++        $verifyDestination = static function (mixed $move, array $upload, string $path) use ($tmp, $expected, $bytes, &$uploadPath): mixed {
++            if (($upload['tmp_name'] ?? null) !== $tmp) {
++                return $move;
++            }
++            if (realpath(dirname($path)) . '/' . basename($path) !== $expected || $move !== null) {
++                throw new Rejection('WordPress couldn’t reserve the exact sample photo filename. No draft was saved.');
++            }
++            // The native sideload checks and attachment processing still run.
++            // Exclusive creation here closes the race between unique-name
++            // checking and the default copy, which could overwrite a new file.
++            $owned = @fopen($expected, 'x+b');
++            if ($owned === false) {
++                throw new Rejection('The photo filename is already in use or can’t be written. No draft was saved.');
++            }
++            $uploadPath = $expected; // Only a successfully created file can be rolled back.
++            try {
++                if (fwrite($owned, $bytes) !== strlen($bytes) || !fflush($owned)) {
++                    throw new Rejection('WordPress couldn’t write the complete sample photo. No draft was saved.');
++                }
++            } finally {
++                fclose($owned);
++            }
++            return true;
+@@ -418 +437,0 @@
+-            $uploadPath = $expected;
+@@ -483,2 +502,4 @@
+-            if (is_link($entry) || !is_file($entry)
+-                || !preg_match('/\A' . $stem . '(?:-scaled|-rotated)?(?:-[0-9]+x[0-9]+)?\.(?:jpg|jpeg|webp|avif)\z/D', basename($entry))) {
++            if (!preg_match('/\A' . $stem . '(?:-scaled|-rotated)?(?:-[0-9]+x[0-9]+)?\.(?:jpg|jpeg|webp|avif)\z/D', basename($entry))) {
++                continue;
++            }
++            if (is_link($entry) || !is_file($entry)) {

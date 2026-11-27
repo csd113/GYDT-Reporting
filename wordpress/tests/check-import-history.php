@@ -2,11 +2,13 @@
 
 use GYDT\SampleResults\ImportHistory;
 
-if (PHP_SAPI !== 'cli') {
+if (PHP_SAPI !== 'cli' || $argc !== 2) {
     exit(1);
 }
 
-require __DIR__ . '/../gydt-sample-results-importer/import-history.php';
+$plugin = $argv[1];
+require $plugin . '/import.php';
+require $plugin . '/import-history.php';
 
 $cases = [
     '2025-01-02T07:59:59+00:00' => ['2025-01-01', 1],

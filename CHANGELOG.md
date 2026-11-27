@@ -38,6 +38,11 @@
 - Removed the Newest and Oldest controls. Check ZIP is now at the bottom of
   the page and still checks without importing.
 
+### Maintenance
+
+- Retired the obsolete demo and its importer package. Production package and
+  desktop regression checks still use purpose-made synthetic data.
+
 ## 1.0.3
 
 - Put exact substance names first in both pickers while keeping dash-insensitive search.

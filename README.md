@@ -16,7 +16,7 @@ Version 1.0.2 uses the same local store as 1.0.1 when it used the approved
 staff profile. Keep the app and exported results in locations accessible
 only to authorized staff.
 
-Download the [production WordPress importer v1.0.2](https://github.com/csd113/GYDT-Reporting/releases/download/v1.0.2/GYDT-Sample-Results-Importer-v1.0.2.zip) for the staff Results workflow.
+Download the matching production WordPress importer for the staff Results workflow from [GitHub Releases](https://github.com/csd113/GYDT-Reporting/releases).
 New drafts use the exporting computer's timestamp, displayed in Vancouver local
 time. Collection and analysis dates remain separate.
 
@@ -49,7 +49,4 @@ Run `pwsh -File ./windows/build-app.ps1 -OutputPath ./GYDT-windows-x64.zip`
 on Windows x64, or `./macos/build-app.sh ./GYDT-macos-arm64.zip` on Apple
 Silicon. Neither build needs a separate profile folder.
 
-The [WordPress fixture source](wordpress/README.md) is for a disposable
-local test site only. It is not a replacement for an installed staff
-importer. The public synthetic importer is licensed under GPLv2 or later.
-That license does not apply to the desktop app.
+See the [production WordPress importer instructions](wordpress/README.md).

@@ -3,12 +3,13 @@
 use GYDT\SampleResults\AcfContract;
 use GYDT\SampleResults\Rejection;
 
-if (PHP_SAPI !== 'cli') {
+if (PHP_SAPI !== 'cli' || $argc !== 2) {
     exit(1);
 }
 
-require __DIR__ . '/../gydt-sample-results-importer/contract.php';
-require __DIR__ . '/../gydt-sample-results-importer/acf-contract.php';
+$plugin = $argv[1];
+require $plugin . '/contract.php';
+require $plugin . '/acf-contract.php';
 
 $select = ['type' => 'select', 'return_format' => 'value'];
 $radio = ['type' => 'radio', 'return_format' => 'value', 'choices' => ['Not Used' => 'Blank']];

@@ -38,3 +38,25 @@ jobs:
       - run: cargo test --locked --all-features
       - name: Build the profile-required Apple Silicon ZIP
         run: ./macos/build-app.sh "$RUNNER_TEMP/GYDT-macos-arm64.zip"
+
+  production-importer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify PHP CLI with GD and mysqli
+        run: |
+          if ! php -r 'exit(extension_loaded("gd") && extension_loaded("mysqli") ? 0 : 1);'; then
+            sudo apt-get update
+            sudo apt-get install -y php-cli php-gd php-mysql
+          fi
+          php -r 'exit(extension_loaded("gd") && extension_loaded("mysqli") ? 0 : 1);'
+      - name: Build and test the production importer
+        run: |
+          curl --fail --silent --show-error --location \
+            https://github.com/csd113/GYDT-Reporting/releases/download/v1.0.2/GYDT-Sample-Results-Importer-v1.0.2.zip \
+            --output "$RUNNER_TEMP/importer-v1.0.2.zip"
+          ./wordpress/build-production-plugin.sh "$RUNNER_TEMP/importer-v1.0.2.zip" "$RUNNER_TEMP/importer-v1.0.4.zip"
+          ./wordpress/tests/check-production-plugin.sh "$RUNNER_TEMP/importer-v1.0.4.zip"

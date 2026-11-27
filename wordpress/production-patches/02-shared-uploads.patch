@@ -1,0 +1,294 @@
+diff --git a/gydt-sample-results-importer.php b/gydt-sample-results-importer.php
+--- a/gydt-sample-results-importer.php
++++ b/gydt-sample-results-importer.php
+@@ -151,3 +150,0 @@
+-            <p><label for="gydt-check-zip">Check ZIPs without importing</label>
+-                <input type="file" id="gydt-check-zip" accept=".zip" multiple aria-describedby="gydt-check-help"></p>
+-            <p id="gydt-check-help" class="description">Choose the same ZIP to see whether a draft already exists. This won’t import it.</p>
+@@ -162 +159,2 @@
+-            <p class="description">Shows your uploads for today in Vancouver. Hiding an upload doesn’t change its Test Result.</p>
++            <p id="gydt-history-total"></p>
++            <p class="description">Shows successful imports for today in Vancouver. Hiding an upload only changes your list.</p>
+@@ -168,5 +166,6 @@
+-            <ul id="gydt-history-items" aria-label="Your uploads today"></ul>
+-            <p class="gydt-history-controls">
+-                <button type="button" class="button" id="gydt-history-newest" hidden>Newest uploads</button>
+-                <button type="button" class="button" id="gydt-history-older" hidden>Older uploads</button>
+-            </p>
++            <ul id="gydt-history-items" aria-label="Today’s uploads"></ul>
++        </section>
++        <section aria-label="Check ZIPs">
++            <p><label for="gydt-check-zip">Check ZIPs without importing</label>
++                <input type="file" id="gydt-check-zip" accept=".zip" multiple aria-describedby="gydt-check-help"></p>
++            <p id="gydt-check-help" class="description">Choose the same ZIP to see whether a draft already exists. This won’t import it.</p>
+diff --git a/import-history.php b/import-history.php
+--- a/import-history.php
++++ b/import-history.php
+@@ -19 +19 @@
+-        $local = ($now ?? new DateTimeImmutable())->setTimezone(new DateTimeZone('America/Vancouver'));
++        $local = Import::exportLocalTime($now ?? new DateTimeImmutable(), new DateTimeZone('America/Vancouver'));
+@@ -30,0 +31,11 @@
++    private static function markedDay(int $id): ?string
++    {
++        $markers = get_post_meta($id, self::OWNER_DAY, false);
++        if (count($markers) !== 1 || !is_string($markers[0])
++            || !preg_match('/\A[1-9][0-9]*:([0-9]{4}-[0-9]{2}-[0-9]{2})\z/D', $markers[0], $match)
++            || !Package::validDate($match[1])) {
++            return null;
++        }
++        return $match[1];
++    }
++
+@@ -37,5 +48 @@
+-        $owners = get_post_meta($post->ID, self::OWNER_DAY, false);
+-        $owner = count($owners) === 1 ? $owners[0] : null;
+-        $prefix = get_current_user_id() . ':';
+-        $day = is_string($owner) && str_starts_with($owner, $prefix) ? substr($owner, strlen($prefix)) : '';
+-        $day = Package::validDate($day) ? $day : null;
++        $day = self::markedDay($post->ID);
+@@ -79 +86 @@
+-            $history = self::page($operator, $day, self::hidden($operator, $day), $before);
++            $history = self::page($day, self::hidden($operator, $day), $before);
+@@ -89 +96 @@
+-    private static function visibleResult(?WP_Post $post): ?array
++    private static function visibleResult(?WP_Post $post, bool $shared = false): ?array
+@@ -93 +100 @@
+-            || !current_user_can('read_post', $post->ID) || !Import::verifiedCompletion($post->ID)) {
++            || (!$shared && !current_user_can('read_post', $post->ID)) || !Import::verifiedCompletion($post->ID)) {
+@@ -101 +108 @@
+-        $review = $post->post_status === 'draft' && current_user_can('edit_post', $post->ID)
++        $review = $post->post_status === 'draft' && current_user_can('read_post', $post->ID) && current_user_can('edit_post', $post->ID)
+@@ -138 +145 @@
+-    private static function page(int $operator, string $day, array $hidden, int $before): array
++    private static function page(string $day, array $hidden, int $before): array
+@@ -141,2 +148,30 @@
+-        $parameters = [self::OWNER_DAY, self::ownerDay($operator, $day), $hidden['through']];
+-        $range = '';
++        // Use the verified existing marker's day part. This includes earlier same-day imports
++        // without adding a second receipt, a migration, or a write on refresh.
++        $marker = "i.meta_key = %s AND i.meta_value REGEXP '^[1-9][0-9]*:[0-9]{4}-[0-9]{2}-[0-9]{2}$'
++            AND RIGHT(i.meta_value, 11) = %s
++            AND NOT EXISTS (SELECT 1 FROM $wpdb->postmeta other_marker WHERE other_marker.post_id=p.ID
++                AND other_marker.meta_key=i.meta_key AND other_marker.meta_id<>i.meta_id)";
++        $verified = Import::completionCondition();
++        $eligible = "FROM $wpdb->postmeta i JOIN $wpdb->posts p ON p.ID=i.post_id
++            WHERE $marker AND p.post_type='results' AND $verified";
++        // Freeze the count and clear high-water mark in the same read so
++        // an import that finishes while this page renders isn't hidden unseen.
++        $totals = $wpdb->get_row($wpdb->prepare(
++            "SELECT MAX(p.ID) AS through, COUNT(DISTINCT CASE WHEN p.post_status IN ('draft','publish') THEN p.ID END) AS total $eligible",
++            self::OWNER_DAY, ':' . $day
++        ));
++        if ($wpdb->last_error !== '' || !$totals) {
++            throw new Rejection('Couldn’t load upload history. Use Refresh status to try again.');
++        }
++        $through = (int) $totals->through;
++        $from = "$eligible AND p.ID > %d AND p.ID <= %d";
++        $parameters = [self::OWNER_DAY, ':' . $day, $hidden['through'], $through];
++        // A canonical suffix is a positive decimal of unbounded length within the title.
++        // Length + binary comparison gives numeric ordering without integer overflow.
++        $tail = "TRIM(LEADING '0' FROM SUBSTRING_INDEX(p.post_title, '-', -1))";
++        $month = "SUBSTRING_INDEX(SUBSTRING_INDEX(p.post_title, '-', 4), '-', -2)";
++        $yearMonth = "CONCAT(SUBSTRING_INDEX($month, '-', 1), '-', SUBSTRING_INDEX($month, '-', -1), '-01')";
++        $dayOfMonth = "SUBSTRING_INDEX(SUBSTRING_INDEX(p.post_title, '-', 5), '-', -1)";
++        $sequence = "CASE WHEN p.post_title REGEXP '^[0-9]+-[0-9]{3}-[1-9][0-9]{3}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-[0-9]{3,}$'
++                    THEN CASE WHEN $dayOfMonth <= DAY(LAST_DAY($yearMonth)) THEN $tail ELSE '' END
++                    ELSE '' END";
+@@ -144,2 +179,11 @@
+-            $range = ' AND p.ID < %d';
+-            $parameters[] = $before;
++            $anchor = $wpdb->get_row($wpdb->prepare(
++                "SELECT p.post_title, ($sequence) AS seq $from AND p.ID=%d",
++                ...[...$parameters, $before]
++            ));
++            if ($wpdb->last_error !== '') {
++                throw new Rejection('Couldn’t load upload history. Use Refresh status to try again.');
++            }
++            if ($anchor && self::markedDay($before) === $day) {
++                $from .= " AND (LENGTH($sequence), BINARY ($sequence), BINARY p.post_title, p.ID) < (%d, BINARY %s, BINARY %s, %d)";
++                array_push($parameters, strlen($anchor->seq), $anchor->seq, $anchor->post_title, $before);
++            }
+@@ -148 +192 @@
+-            $range .= ' AND p.ID NOT IN (' . implode(',', array_fill(0, count($hidden['ids']), '%d')) . ')';
++            $from .= ' AND p.ID NOT IN (' . implode(',', array_fill(0, count($hidden['ids']), '%d')) . ')';
+@@ -151,8 +195,5 @@
+-        $parameters[] = self::PAGE_SIZE + 1;
+-        // The operator/day marker is part of the transaction that certifies a completed import.
+-        $ids = $wpdb->get_col($wpdb->prepare(
+-            "SELECT DISTINCT p.ID FROM $wpdb->postmeta i
+-             INNER JOIN $wpdb->posts p ON p.ID = i.post_id
+-             WHERE i.meta_key = %s AND BINARY i.meta_value = BINARY %s AND p.post_type = 'results' AND p.ID > %d$range
+-             ORDER BY p.ID DESC LIMIT %d",
+-            $parameters
++        $rows = $wpdb->get_results($wpdb->prepare(
++            "SELECT DISTINCT p.ID, BINARY p.post_title AS sort_title, BINARY ($sequence) AS suffix,
++                    LENGTH($sequence) AS digits $from
++             ORDER BY digits DESC, suffix DESC, sort_title DESC, p.ID DESC LIMIT %d",
++            ...[...$parameters, self::PAGE_SIZE + 1]
+@@ -163,10 +204,8 @@
+-        $page = array_slice($ids, 0, self::PAGE_SIZE);
+-        $rows = [];
+-        $owner = [self::ownerDay($operator, $day)];
+-        foreach ($page as $id) {
+-            if (get_post_meta((int) $id, self::OWNER_DAY, false) === $owner
+-                && ($row = self::visibleResult(get_post((int) $id)))) {
+-                $rows[] = $row;
+-            }
+-        }
+-        $through = $rows[0]['id'] ?? 0;
++        $page = array_slice($rows, 0, self::PAGE_SIZE);
++        $visible = [];
++        foreach ($page as $item) {
++            $id = (int) $item->ID;
++            if (self::markedDay($id) === $day && ($row = self::visibleResult(get_post($id), true))) {
++                $visible[] = $row;
++            }
++        }
+@@ -174,3 +213,4 @@
+-            'rows' => $rows,
+-            'next_before' => count($ids) > self::PAGE_SIZE ? (int) end($page) : 0,
+-            'clear' => $through ? ['id' => $through, 'key' => wp_create_nonce(self::clearAction($day, $through))] : null,
++            'rows' => $visible,
++            'total' => (int) $totals->total,
++            'next_before' => count($rows) > self::PAGE_SIZE ? (int) end($page)->ID : 0,
++            'clear' => $through && $visible ? ['id' => $through, 'key' => wp_create_nonce(self::clearAction($day, $through))] : null,
+@@ -203,2 +243,2 @@
+-                if (!$clear && (get_post_meta($id, self::OWNER_DAY, false) !== [self::ownerDay($operator, $day)]
+-                    || !self::visibleResult(get_post($id)))) {
++                if (!$clear && (self::markedDay($id) !== $day
++                    || !self::visibleResult(get_post($id), true))) {
+diff --git a/import.php b/import.php
+--- a/import.php
++++ b/import.php
+@@ -120 +120 @@
+-    private static function exportLocalTime(DateTimeImmutable $instant, DateTimeZone $zone): DateTimeImmutable
++    public static function exportLocalTime(DateTimeImmutable $instant, DateTimeZone $zone): DateTimeImmutable
+@@ -656,0 +657,29 @@
++    /** SQL proof for the daily count. The enclosing query must use posts alias p. */
++    public static function completionCondition(): string
++    {
++        global $wpdb;
++        $uuid = '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
++        return $wpdb->prepare(
++            "EXISTS (
++                SELECT 1 FROM $wpdb->postmeta uid
++                JOIN $wpdb->postmeta f ON f.post_id=uid.post_id AND f.meta_key=%s
++                JOIN $wpdb->postmeta c ON c.post_id=uid.post_id AND c.meta_key=%s
++                WHERE uid.post_id=p.ID AND uid.meta_key=%s
++                  AND LOWER(uid.meta_value)=BINARY uid.meta_value AND uid.meta_value REGEXP %s
++                  AND LOWER(f.meta_value)=BINARY f.meta_value AND f.meta_value REGEXP '^[0-9a-f]{64}$'
++                  AND BINARY c.meta_value=BINARY CONCAT('1:',f.meta_value)
++                  AND NOT EXISTS (
++                      SELECT 1 FROM $wpdb->postmeta extra WHERE extra.post_id=p.ID AND
++                      ((extra.meta_key=uid.meta_key AND extra.meta_id<>uid.meta_id)
++                       OR (extra.meta_key=f.meta_key AND extra.meta_id<>f.meta_id)
++                       OR (extra.meta_key=c.meta_key AND extra.meta_id<>c.meta_id))
++                  )
++                  AND NOT EXISTS (
++                      SELECT 1 FROM $wpdb->postmeta d JOIN $wpdb->posts other ON other.ID=d.post_id
++                      WHERE d.meta_key=uid.meta_key AND BINARY d.meta_value=BINARY uid.meta_value
++                        AND d.post_id<>p.ID AND other.post_type='results'
++                  )
++            )", self::FINGERPRINT, self::COMPLETION, self::ID, $uuid
++        );
++    }
++
+diff --git a/queue.js b/queue.js
+--- a/queue.js
++++ b/queue.js
+@@ -6 +6 @@
+-    const checkInput = form.querySelector('#gydt-check-zip');
++    const checkInput = document.querySelector('#gydt-check-zip');
+@@ -10,0 +11 @@
++    const historyTotal = historyPanel.querySelector('#gydt-history-total');
+@@ -15,2 +15,0 @@
+-    const newestHistory = historyPanel.querySelector('#gydt-history-newest');
+-    const olderHistory = historyPanel.querySelector('#gydt-history-older');
+@@ -30 +28,0 @@
+-    let olderBefore = 0;
+@@ -208,2 +205,0 @@
+-        newestHistory.disabled = historyBusy;
+-        olderHistory.disabled = historyBusy;
+@@ -216,4 +212,2 @@
+-    function renderHistory(data, before) {
+-        if (historyDay !== data.day || !before || !historyCoverage) {
+-            historyCoverage = data.clear;
+-        }
++    function renderHistory(data) {
++        historyCoverage = data.clear;
+@@ -221,3 +215 @@
+-        olderBefore = data.next_before;
+-        newestHistory.hidden = !before;
+-        olderHistory.hidden = !olderBefore;
++        historyTotal.textContent = data.total === 1 ? '1 upload today' : data.total + ' uploads today';
+@@ -229 +221 @@
+-        historyMessage.textContent = data.rows.length ? '' : 'No uploads on this page.';
++        historyMessage.textContent = data.rows.length ? '' : 'No uploads today.';
+@@ -232,0 +225 @@
++            historyTotal.textContent = '';
+@@ -236,2 +228,0 @@
+-            newestHistory.hidden = true;
+-            olderHistory.hidden = true;
+@@ -262 +253,16 @@
+-    async function syncHistory({operation = 'list', id = 0, day = historyDay, hide = [], before = 0, clearKey = ''} = {}) {
++    async function readHistory(body, signal) {
++        const response = await fetch(historyPanel.dataset.url, {method: 'POST', body, signal});
++        const data = await response.json();
++        if (!response.ok) {
++            throw new Error(typeof data.message === 'string' ? data.message : 'Couldn’t load upload history. Use Refresh status to try again.');
++        }
++        if (typeof data.day !== 'string' || !Array.isArray(data.rows) || !Array.isArray(data.queue)
++            || !Number.isInteger(data.total) || data.total < 0
++            || !Number.isInteger(data.next_before) || data.next_before < 0
++            || !Number.isInteger(data.seconds_to_midnight) || data.seconds_to_midnight < 1 || data.seconds_to_midnight > 90_000) {
++            throw new Error('Couldn’t load upload history. Use Refresh status to try again.');
++        }
++        return data;
++    }
++
++    async function syncHistory({operation = 'list', id = 0, day = historyDay, hide = [], clearKey = ''} = {}) {
+@@ -272 +278 @@
+-        for (const [key, value] of Object.entries({_wpnonce: historyPanel.dataset.nonce, operation, id, day, before, clear_key: clearKey,
++        for (const [key, value] of Object.entries({_wpnonce: historyPanel.dataset.nonce, operation, id, day, clear_key: clearKey,
+@@ -279,8 +285,23 @@
+-            const response = await fetch(historyPanel.dataset.url, {method: 'POST', body, signal: controller.signal});
+-            const data = await response.json();
+-            if (!response.ok) {
+-                throw new Error(typeof data.message === 'string' ? data.message : 'Couldn’t load upload history. Use Refresh status to try again.');
+-            }
+-            if (typeof data.day !== 'string' || !Array.isArray(data.rows) || !Array.isArray(data.queue)
+-                || !Number.isInteger(data.seconds_to_midnight) || data.seconds_to_midnight < 1 || data.seconds_to_midnight > 90_000) {
+-                throw new Error('Couldn’t load upload history. Use Refresh status to try again.');
++            const data = await readHistory(body, controller.signal);
++            let next = data.next_before;
++            const visited = new Set();
++            const listed = new Set(data.rows.map(row => row.id));
++            while (next && !visited.has(next)) {
++                visited.add(next);
++                const more = new FormData();
++                for (const [key, value] of Object.entries({_wpnonce: historyPanel.dataset.nonce, operation: 'list', day: data.day, before: next})) {
++                    more.set(key, value);
++                }
++                const page = await readHistory(more, controller.signal);
++                if (page.day !== data.day) {
++                    historyRefreshPending = true;
++                    return;
++                }
++                data.clear ??= page.clear;
++                for (const row of page.rows) {
++                    if (!listed.has(row.id)) {
++                        listed.add(row.id);
++                        data.rows.push(row);
++                    }
++                }
++                next = page.next_before;
+@@ -292 +313 @@
+-            renderHistory(data, day === data.day ? before : 0);
++            renderHistory(data);
+@@ -327,2 +347,0 @@
+-    newestHistory.addEventListener('click', () => void syncHistory());
+-    olderHistory.addEventListener('click', () => void syncHistory({before: olderBefore}));
+@@ -346,0 +366,3 @@
++    window.setInterval(() => {
++        if (document.visibilityState === 'visible') queueHistoryRefresh();
++    }, 30_000);
