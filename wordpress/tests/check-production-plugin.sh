@@ -8,7 +8,7 @@ trap 'rm -rf "$stage"' EXIT
 trap 'exit 1' HUP INT TERM
 UNZIP= UNZIPOPT= unzip -q "$1" -d "$stage"
 plugin="$stage/gydt-sample-results-importer"
-[ "$(find "$plugin" -type f | wc -l | tr -d ' ')" -eq 11 ]
+[ "$(find "$plugin" -type f | wc -l | tr -d ' ')" -eq 12 ]
 [ "$(sed -n '/^ \* Version: /p' "$plugin/gydt-sample-results-importer.php")" = ' * Version: 1.0.4' ]
 for f in "$plugin/"*.php; do php -l "$f"; done
 node --check "$plugin/queue.js"

@@ -23,11 +23,12 @@ plugin=gydt-sample-results-importer
 UNZIP= UNZIPOPT= unzip -q "$baseline" -d "$stage"
 (
     cd "$stage/$plugin"
-    for patch in 01-private-spectra 02-shared-uploads 03-canonical-jpg 04-version 06-rollover-boundary; do
+    for patch in 01-private-spectra 02-shared-uploads 03-canonical-jpg 04-version 05-updater 06-rollover-boundary; do
         git apply --unidiff-zero "$source_dir/production-patches/$patch.patch"
     done
+    cp "$source_dir/production-patches/updater.php" updater.php
     for f in acf-contract.php contract.php "$plugin.php" import-history.php import.php \
-        queue.css queue.js spectrum.php submission-lock.php substances-catalog.xml zip.php; do
+        queue.css queue.js spectrum.php submission-lock.php substances-catalog.xml updater.php zip.php; do
         [ -f "$f" ] && [ ! -L "$f" ] || die "Missing production plugin source file."
         TZ=UTC touch -t 200001010000 "$f"
     done
@@ -38,7 +39,7 @@ UNZIP= UNZIPOPT= unzip -q "$baseline" -d "$stage"
     TZ=UTC ZIPOPT= zip -q -X "$archive" \
         "$plugin/acf-contract.php" "$plugin/contract.php" "$plugin/$plugin.php" \
         "$plugin/import-history.php" "$plugin/import.php" "$plugin/queue.css" "$plugin/queue.js" \
-        "$plugin/spectrum.php" "$plugin/submission-lock.php" "$plugin/substances-catalog.xml" "$plugin/zip.php"
+        "$plugin/spectrum.php" "$plugin/submission-lock.php" "$plugin/substances-catalog.xml" "$plugin/updater.php" "$plugin/zip.php"
 )
 UNZIP= UNZIPOPT= unzip -tq "$archive" >/dev/null
 ln "$archive" "$output"

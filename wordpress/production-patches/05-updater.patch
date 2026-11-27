@@ -1,0 +1,27 @@
+diff --git a/gydt-sample-results-importer.php b/gydt-sample-results-importer.php
+--- a/gydt-sample-results-importer.php
++++ b/gydt-sample-results-importer.php
+@@ -4,6 +4,7 @@
+  * Description: Import format-1 sample ZIPs into editable Test Results drafts.
+  * Version: 1.0.4
+  * Requires PHP: 8.1
++ * Update URI: https://github.com/csd113/GYDT-Reporting
+  */
+ 
+ namespace GYDT\SampleResults;
+@@ -19,6 +20,7 @@
+ require_once __DIR__ . '/import-history.php';
+ require_once __DIR__ . '/import.php';
+ require_once __DIR__ . '/spectrum.php';
++require_once __DIR__ . '/updater.php';
+ 
+ const IMPORT_ACTION = 'gydt_import_sample_results';
+ 
+@@ -45,6 +47,7 @@
+ add_filter('wp_insert_post_empty_content', [Import::class, 'allowSavedZero'], PHP_INT_MAX, 2);
+ AcfContract::register();
+ Spectrum::register(__FILE__);
++Updater::register();
+ 
+ function handleUpload(): never
+ {
