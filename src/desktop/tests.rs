@@ -15,7 +15,7 @@ use super::{
     store::{Book, Sequence},
 };
 
-fn make_sample() -> Result<Draft> {
+pub(super) fn make_sample() -> Result<Draft> {
     let mut draft = Draft::fresh(Site::ExampleWest, "2026-11-22".parse()?)?;
     draft.title = "Synthetic / specimen".into();
     draft.collection_date = "2026-11-21".into();
@@ -56,7 +56,7 @@ fn make_sample() -> Result<Draft> {
     Ok(draft)
 }
 
-fn fixture_profile() -> Result<Profile> {
+pub(super) fn fixture_profile() -> Result<Profile> {
     let tmp = tempfile::tempdir()?;
     write_fixture_profile(tmp.path(), ["fixture-east", "fixture-west"])?;
     Ok(Profile::load(tmp.path())?)
@@ -88,7 +88,7 @@ fn write_fixture_profile(root: &Path, [first, second]: [&str; 2]) -> Result<()> 
     Ok(())
 }
 
-fn export_sample(draft: &Draft, profile: &Profile, folder: &Path) -> Result<()> {
+pub(super) fn export_sample(draft: &Draft, profile: &Profile, folder: &Path) -> Result<()> {
     let export = prepare_profile_export(
         &mut [draft.to_sample()?],
         profile,

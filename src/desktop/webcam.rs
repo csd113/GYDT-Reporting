@@ -22,6 +22,10 @@ use super::{
 const TICK: Duration = Duration::from_millis(80);
 const START_LIMIT: Duration = Duration::from_secs(6);
 const FRESH_LIMIT: Duration = Duration::from_millis(850);
+// Mirror the package JPEG bounds before reading the camera pipe.
+const MAX_CAMERA_SIDE: usize = 4096;
+const MAX_CAMERA_PIXELS: usize = 8_388_608;
+const MAX_CAMERA_JPEG: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Camera {
@@ -54,15 +58,30 @@ struct Frame {
 
 impl Frame {
     fn image(&self) -> ColorImage {
-        ColorImage::new(
-            [self.width, self.height],
-            self.bgra
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|&[b, g, r, _]| Color32::from_rgb(r, g, b))
-                .collect(),
-        )
+        // A bounded texture keeps preview lightweight without changing the
+        // stored camera frame or its aspect ratio.
+        let (width, height) = if self.width <= 640 && self.height <= 480 {
+            (self.width, self.height)
+        } else if self.width * 480 >= self.height * 640 {
+            (640, (self.height * 640 / self.width).max(1))
+        } else {
+            ((self.width * 480 / self.height).max(1), 480)
+        };
+        let pixels = self.bgra.as_chunks::<4>().0;
+        let preview = (0..height)
+            .flat_map(|y| {
+                (0..width).map(move |x| {
+                    let row = y * self.height / height;
+                    let column = x * self.width / width;
+                    pixels
+                        .get(row * self.width + column)
+                        .map_or(Color32::BLACK, |&[blue, green, red, _]| {
+                            Color32::from_rgb(red, green, blue)
+                        })
+                })
+            })
+            .collect();
+        ColorImage::new([width, height], preview)
     }
 
     fn photo(&self) -> Result<PhotoCopy> {
@@ -74,18 +93,27 @@ impl Frame {
             .iter()
             .flat_map(|&[b, g, r, _]| [r, g, b])
             .collect();
-        JpegEncoder::new_with_quality(&mut jpg, 90).encode(
-            &rgb,
-            u32::try_from(self.width)?,
-            u32::try_from(self.height)?,
-            ExtendedColorType::Rgb8,
-        )?;
-        let clean = gydt_results_compiler::Photo::from_jpeg_bytes("jpg", jpg)?;
-        Ok(PhotoCopy::new(
-            "Webcam photo.jpg",
-            "jpg",
-            &clean.into_jpeg_bytes(),
-        ))
+        let width = u32::try_from(self.width)?;
+        let height = u32::try_from(self.height)?;
+        // Fit the importer byte limit without reducing the captured dimensions.
+        for quality in [90, 80, 70, 60] {
+            jpg.clear();
+            JpegEncoder::new_with_quality(&mut jpg, quality).encode(
+                &rgb,
+                width,
+                height,
+                ExtendedColorType::Rgb8,
+            )?;
+            if jpg.len() <= MAX_CAMERA_JPEG {
+                let clean = gydt_results_compiler::Photo::from_jpeg_bytes("jpg", jpg)?;
+                return Ok(PhotoCopy::new(
+                    "Webcam photo.jpg",
+                    "jpg",
+                    &clean.into_jpeg_bytes(),
+                ));
+            }
+        }
+        Err("The camera photo exceeded the JPEG file-size limit.".into())
     }
 }
 
@@ -160,7 +188,10 @@ fn open_reply(pipe: &mut impl Read) -> io::Result<OpenReply> {
 fn frame(pipe: &mut impl Read) -> io::Result<Frame> {
     let width = word(pipe)?;
     let height = word(pipe)?;
-    if !(1..=640).contains(&width) || !(1..=480).contains(&height) {
+    if !(1..=MAX_CAMERA_SIDE).contains(&width)
+        || !(1..=MAX_CAMERA_SIDE).contains(&height)
+        || width * height > MAX_CAMERA_PIXELS
+    {
         return Err(invalid());
     }
     let mut data = vec![0; width * height * 4];
@@ -576,6 +607,9 @@ impl Preview {
         if let Some(camera) = &self.active {
             ui.weak(&camera.name);
         }
+        if let Some(captured) = &self.captured {
+            ui.weak(format!("{} x {} pixels", captured.width, captured.height));
+        }
         if let Some(texture) = &self.texture {
             let mut size = texture.size_vec2();
             size *= (ui.available_width() / size.x).min(156.0 / size.y);
@@ -644,6 +678,53 @@ mod tests {
     use super::{Camera, Preview, Unavailable, devices, frame, open_reply};
     use std::{path::PathBuf, time::Instant};
     use uuid::Uuid;
+
+    #[test]
+    fn camera_jpeg_and_zip_keep_the_negotiated_dimensions() -> super::Result<()> {
+        use super::super::tests::{export_sample, fixture_profile, make_sample};
+        use std::{
+            fs::File,
+            io::{Cursor, Read as _},
+        };
+
+        let profile = fixture_profile()?;
+        for (width, height, texture_size) in
+            [(640usize, 480usize, [640, 480]), (1280, 720, [640, 360])]
+        {
+            // Neutral pixels at the measured released and native Razer modes.
+            // No camera data is needed to verify the actual encoder/export path.
+            let frame = super::Frame {
+                width,
+                height,
+                bgra: [85, 100, 120, 255].repeat(width * height).into(),
+                at: Instant::now(),
+            };
+            assert_eq!(frame.image().size, texture_size);
+            let photo = frame.photo()?;
+            let captured = photo.bytes()?;
+            let jpeg_dimensions = |bytes: &[u8]| {
+                image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Jpeg)
+                    .into_dimensions()
+            };
+            let expected = (u32::try_from(width)?, u32::try_from(height)?);
+            assert_eq!(jpeg_dimensions(&captured)?, expected);
+
+            let mut draft = make_sample()?;
+            draft.title = "Synthetic resolution capture".into();
+            draft.photo = Some(photo);
+            let out = tempfile::tempdir()?;
+            export_sample(&draft, &profile, out.path())?;
+            let mut zip = zip::ZipArchive::new(File::open(
+                out.path().join("Synthetic resolution capture.zip"),
+            )?)?;
+            let mut exported = Vec::new();
+            zip.by_name("Synthetic resolution capture.jpg")?
+                .read_to_end(&mut exported)?;
+            assert_eq!(jpeg_dimensions(&exported)?, expected);
+            assert_eq!(exported, captured);
+        }
+        Ok(())
+    }
 
     #[test]
     fn source_loss_clears_snapshot_and_keeps_selected_identity() -> super::Result<()> {

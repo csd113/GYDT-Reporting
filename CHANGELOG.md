@@ -4,6 +4,10 @@
 
 ### Desktop app
 
+- Windows webcam photos preserve the camera stream’s resolution and aspect
+  ratio. If you downloaded the original v1.0.5 for Windows, download it again
+  to get this fix. The WordPress importer is unchanged.
+
 - The Windows download contains one executable. Opening the webcam preview
   installs its bundled helper in local app data and checks it before launch.
   An existing helper beside the app is not used or removed.

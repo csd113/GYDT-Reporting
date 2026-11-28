@@ -101,8 +101,9 @@ static void preview(hstring const& id) {
     settings.SharingMode(MediaCaptureSharingMode::SharedReadOnly);
     capture.InitializeAsync(settings).get();
     auto source = capture.FrameSources().Lookup(match->info.Id());
-    auto reader = capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes::Bgra8(),
-        BitmapSize{640,480}).get();
+    // Keep the negotiated source dimensions and aspect ratio. Only the
+    // display texture is reduced; JPEG capture uses these native pixels.
+    auto reader = capture.CreateFrameReaderAsync(source, MediaEncodingSubtypes::Bgra8()).get();
     reader.AcquisitionMode(MediaFrameReaderAcquisitionMode::Realtime);
     auto arrival = std::make_shared<std::atomic<uint64_t>>(0);
     auto lost = std::make_shared<std::atomic<bool>>(false);
@@ -134,8 +135,9 @@ static void preview(hstring const& id) {
         if (!picture || picture.BitmapPixelFormat() != BitmapPixelFormat::Bgra8)
             throw std::runtime_error("invalid preview bitmap");
         auto const width = picture.PixelWidth(), height = picture.PixelHeight();
-        if (width < 1 || width > 640 || height < 1 || height > 480)
-            throw std::runtime_error("preview bitmap beyond bound");
+        // Match the desktop JPEG and WordPress package bounds before allocation.
+        if (width < 1 || width > 4096 || height < 1 || height > 4096 || width * height > 8388608)
+            throw std::runtime_error("camera bitmap exceeds the supported JPEG dimensions");
         auto const count = static_cast<uint32_t>(width * height * 4);
         Buffer buffer(count);
         buffer.Length(count);
