@@ -5,7 +5,7 @@ installer and checksum from [GYDT Sample Reporting Releases](https://github.com/
 Desktop v1.0.4 or newer requires production importer v1.0.4 or newer to upload ZIPs containing
 OPUS spectra. Older ZIPs without spectra remain supported.
 
-New OPUS imports in v1.0.5 use the existing **Spectra File** field on the Test
+Starting with v1.0.5, new OPUS imports use the existing **Spectra File** field on the Test
 Result and appear in the Media Library like manual uploads. They are not
 staff-only by default. If the site allows direct access to media URLs, a
 spectrum link can work even while its Result is a draft. The importer does not
@@ -17,7 +17,7 @@ keeps the existing staff-only download available on those Results only.
 
 Leave v1.0.2 installed and active. On WordPress 5.5 or newer, use
 **Plugins → Add New Plugin → Upload Plugin**, select the verified production
-v1.0.5 ZIP, then choose **Replace current with uploaded**. Do not deactivate or
+v1.0.6 ZIP, then choose **Replace current with uploaded**. Do not deactivate or
 delete the installed plugin first. The replacement uses the same plugin folder.
 
 After installing v1.0.4 or newer, on WordPress 5.8 or newer, an administrator can use
@@ -35,8 +35,8 @@ The builder verifies the exact release checksum, applies the reviewed patches
 in order, and writes a new ZIP. It does not publish or install anything.
 
 ```sh
-./wordpress/build-production-plugin.sh /path/to/GYDT-Sample-Results-Importer-v1.0.2.zip /path/to/GYDT-Sample-Results-Importer-v1.0.5.zip
-./wordpress/tests/check-production-plugin.sh /path/to/GYDT-Sample-Results-Importer-v1.0.5.zip
+./wordpress/build-production-plugin.sh /path/to/GYDT-Sample-Results-Importer-v1.0.2.zip /path/to/GYDT-Sample-Results-Importer-v1.0.6.zip
+./wordpress/tests/check-production-plugin.sh /path/to/GYDT-Sample-Results-Importer-v1.0.6.zip
 ```
 
 The package check requires PHP CLI with mysqli and Node.js. Full upload,

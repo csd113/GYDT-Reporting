@@ -1,5 +1,22 @@
 # Release notes
 
+## 1.0.6
+
+### Desktop app
+
+- Closing a sample tab now warns before discarding unexported work. Keep Editing
+  is the default. Blank and unchanged exported or reopened tabs close normally.
+- Substance search, large tab collections, sample numbering and preparation of
+  photo-heavy exports are faster.
+- Export checks better protect existing numbered samples and retained originals,
+  and stop publication if the Vancouver reporting day changes during staging.
+  The app also checks that the OPUS source folder hasn't been replaced.
+- Fixed stale photo prompts and improved the export controls in narrow windows.
+
+### WordPress importer
+
+- The installer version matches the desktop app. Import behavior is unchanged.
+
 ## 1.0.5
 
 ### Desktop app

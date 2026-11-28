@@ -2,7 +2,7 @@
 set -eu
 
 die() { printf '%s\n' "$1" >&2; exit 2; }
-[ "$#" -eq 2 ] || die "Usage: $0 /path/to/released-v1.0.2.zip /path/to/new-v1.0.5.zip"
+[ "$#" -eq 2 ] || die "Usage: $0 /path/to/released-v1.0.2.zip /path/to/new-v1.0.6.zip"
 
 source_dir=$(cd -P "$(dirname "$0")" && pwd)
 case "$1" in /*) baseline=$1 ;; *) baseline="$PWD/$1" ;; esac
@@ -32,7 +32,7 @@ UNZIP= UNZIPOPT= unzip -q "$baseline" -d "$stage"
         [ -f "$f" ] && [ ! -L "$f" ] || die "Missing production plugin source file."
         TZ=UTC touch -t 200001010000 "$f"
     done
-    [ "$(sed -n '/^ \* Version: /p' "$plugin.php")" = ' * Version: 1.0.5' ] || die "Wrong plugin version."
+    [ "$(sed -n '/^ \* Version: /p' "$plugin.php")" = ' * Version: 1.0.6' ] || die "Wrong plugin version."
 )
 (
     cd "$stage"
