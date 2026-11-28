@@ -5,7 +5,7 @@ version, even when a component has no code changes. Use the tag `vX.Y.Z`
 and these exact artifact names.
 
 - `GYDT-Sample-Reporting-vX.Y.Z-macos-arm64.zip` (Apple Silicon app)
-- `GYDT-Sample-Reporting-vX.Y.Z-windows-x64.zip` (Windows app and camera helper)
+- `GYDT-Sample-Reporting-vX.Y.Z-windows-x64.zip` (one Windows app EXE with the camera helper embedded)
 - `GYDT-Sample-Results-Importer-vX.Y.Z.zip` (full production WordPress plugin)
 - `SHA256SUMS.txt` (one lowercase SHA-256 and two spaces before each exact ZIP name)
 

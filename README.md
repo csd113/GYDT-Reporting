@@ -37,16 +37,25 @@ copies the same bytes into the ZIP and beside it. Use a separate export folder.
 If OPUS denies access, unload the named file and retry. A file can still export
 while open if the operating system allows the app to snapshot it.
 
-WordPress uploads with OPUS require the paired production importer v1.0.4.
+WordPress uploads with OPUS require production importer v1.0.4 or newer.
+Starting with v1.0.5, new imports fill the existing **Spectra File** field and
+follow the same access rules as manually uploaded media.
 Leave OPUS off if the site still runs importer v1.0.2.
 
 ### Optional webcam on Windows
 
-Turn on **Enable webcam capture** in Settings. On a sample, choose **Take
-photo…**, select a color camera, and start the preview. **Use photo** attaches
-the captured JPEG to that sample. The video is not recorded or uploaded. You
-can still attach a JPG file without enabling the webcam. Extract the Windows
-ZIP with its camera helper beside the app. No webcam setting appears on macOS.
+Turn on **Enable webcam capture** in Settings. Activate the sample photo box
+or choose **Take Image** in the new-sample prompt to open the live preview.
+The app starts your saved camera or the only available color camera. To choose
+or switch cameras, use **Camera** next to **Enable webcam capture** in Settings.
+The app won't switch to a different camera if your saved choice is disconnected.
+Reconnect it and retry, or select a different camera in Settings. **Use photo** attaches
+the captured JPEG, while **Cancel** leaves any existing photo unchanged.
+**Browse JPG…** and drag-and-drop still work without starting the camera.
+The video is not recorded or uploaded. The Windows ZIP contains
+one app executable. On first use, the app installs its bundled camera helper
+inside its local data folder, in the `camera` subfolder. It does not use an old
+helper beside the app. No webcam setting appears on macOS.
 To build the Windows ZIP, install the Visual C++ x64 tools and Windows SDK.
 
 ## Build and test

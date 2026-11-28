@@ -1,5 +1,27 @@
 # Release notes
 
+## 1.0.5
+
+### Desktop app
+
+- The Windows download contains one executable. Opening the webcam preview
+  installs its bundled helper in local app data and checks it before launch.
+  An existing helper beside the app is not used or removed.
+- With webcam capture enabled, the photo box and the new-sample **Take Image**
+  button open the live preview directly. Browse or drop a JPG instead, or skip
+  the prompt. Cancelling a preview keeps any existing photo.
+- Choose and save a named camera in Settings. If it disconnects, reconnect and
+  retry or select another camera. The app never substitutes another device.
+- Manual JPG attachment remains available if webcam capture is disabled or
+  the bundled helper cannot start. The macOS workflow is unchanged.
+
+### WordPress importer
+
+- New OPUS imports add the original `.0` file to the existing **Spectra File**
+  field on the Test Result. The file follows the site’s normal media access
+  rules, just like a manual upload. Older private spectra remain available to
+  authorized staff from their original Results.
+
 ## 1.0.4
 
 ### Desktop app

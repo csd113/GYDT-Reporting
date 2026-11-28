@@ -38,7 +38,7 @@ def pe(version=None):
 
 
 class ReleaseTest(unittest.TestCase):
-    TAG = "v1.0.4"
+    TAG = "v1.0.5"
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -48,7 +48,7 @@ class ReleaseTest(unittest.TestCase):
         self.package()
         self.sums()
 
-    def package(self, mac="1.0.4", win="1.0.4", wp="1.0.4", catalogue=None, profile=None):
+    def package(self, mac="1.0.5", win="1.0.5", wp="1.0.5", catalogue=None, profile=None, camera="bundled"):
         if profile is None:
             profile = (gate.PROFILE / "profile.json").read_bytes()
         def app_info(version):
@@ -62,8 +62,16 @@ class ReleaseTest(unittest.TestCase):
             z.writestr(gate.MAC + "MacOS/gydt-results-compiler", bytes.fromhex("cffaedfe0c000001") + app_info(mac))
             z.writestr(gate.MAC + "Resources/AppIcon.icns", b"synthetic")
         with zipfile.ZipFile(self.home / self.win, "w") as z:
-            z.writestr(gate.APP_EXE, pe(win) + app_info(win))
-            z.writestr("GYDT-camera.exe", pe())
+            helper = bytes(pe())
+            embedded = b""
+            if camera in ("bundled", "tampered"):
+                expected = hashlib.sha256(helper).hexdigest().encode("ascii")
+                if camera == "tampered":
+                    helper = helper[:-1] + b"x"
+                embedded = gate.CAMERA_RECORD + struct.pack("<I", len(helper)) + expected + helper
+            z.writestr(gate.APP_EXE, pe(win) + app_info(win) + embedded)
+            if camera == "loose":
+                z.writestr("GYDT-camera.exe", helper)
         approved = Path(gate.__file__).resolve().parents[1] / "data/embedded-profile/substances-catalog.xml"
         with zipfile.ZipFile(self.home / self.wp, "w") as z:
             for f in gate.PLUGIN_FILES:
@@ -83,6 +91,17 @@ class ReleaseTest(unittest.TestCase):
     def test_complete(self):
         gate.check(self.home, self.TAG)
 
+    def test_legacy_1_0_4_has_side_by_side_helper(self):
+        self.package(win="1.0.4", camera="loose")
+        gate.check_zip(self.home / self.win, 1, "1.0.4")
+
+    def test_reject_missing_tampered_or_loose_helper_for_1_0_5(self):
+        for kind in ("missing", "tampered", "loose"):
+            with self.subTest(camera=kind), self.assertRaises(gate.Hold):
+                self.package(camera=kind)
+                self.sums()
+                gate.check(self.home, self.TAG)
+
     def test_missing_asset(self):
         (self.home / self.win).unlink()
         with self.assertRaises(gate.Hold):
@@ -96,7 +115,7 @@ class ReleaseTest(unittest.TestCase):
     def test_mismatched_metadata_even_with_current_hashes(self):
         for part in ("mac", "win", "wp"):
             with self.subTest(package=part), self.assertRaises(gate.Hold):
-                self.package(**{part: "1.0.5"})
+                self.package(**{part: "1.0.6"})
                 self.sums()
                 gate.check(self.home, self.TAG)
 
@@ -110,7 +129,7 @@ class ReleaseTest(unittest.TestCase):
     def test_duplicate_member(self):
         with warnings.catch_warnings(), zipfile.ZipFile(self.home / self.win, "a") as z:
             warnings.simplefilter("ignore", UserWarning)
-            z.writestr(gate.APP_EXE, pe("1.0.4"))
+            z.writestr(gate.APP_EXE, pe("1.0.5"))
         self.sums()
         with self.assertRaises(gate.Hold):
             gate.check(self.home, self.TAG)

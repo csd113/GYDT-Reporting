@@ -21,6 +21,7 @@ MANIFEST = "SHA256SUMS.txt"
 MAX_BYTES = 64 * 1024 * 1024
 APP = "GYDT Sample Reporting"
 APP_EXE = APP + ".exe"
+CAMERA_RECORD = b"GYDT-CAMERA-BUNDLE-1\0"
 MAC = APP + ".app/Contents/"
 PLUGIN = "gydt-sample-results-importer"
 PROFILE = Path(__file__).resolve().parents[1] / "data/embedded-profile"
@@ -129,10 +130,31 @@ def wordpress(z, version):
             "Importer does not contain the approved functional catalogue.")
 
 
+def camera_payload(binary):
+    """Find and verify the helper PE stored in the app, not loose ZIP bytes."""
+    valid = []
+    offset = 0
+    while (offset := binary.find(CAMERA_RECORD, offset)) != -1:
+        offset += len(CAMERA_RECORD)
+        size_raw = binary[offset:offset + 4]
+        expected = binary[offset + 4:offset + 68]
+        if len(size_raw) != 4 or not re.fullmatch(rb"[a-f0-9]{64}", expected):
+            continue
+        size = int.from_bytes(size_raw, "little")
+        if not 64 <= size <= 8 * 1024 * 1024 or offset + 68 + size > len(binary):
+            continue
+        helper = binary[offset + 68:offset + 68 + size]
+        if hashlib.sha256(helper).hexdigest().encode("ascii") == expected:
+            pe_offset(helper)
+            valid.append(helper)
+    require(len(valid) == 1, "Windows app must contain exactly one verified camera helper.")
+    return valid[0]
+
+
 def check_zip(path, kind, version):
     expected = [
         {MAC + name for name in ("Info.plist", "MacOS/gydt-results-compiler", "Resources/AppIcon.icns")},
-        {APP_EXE, "GYDT-camera.exe"},
+        {APP_EXE, "GYDT-camera.exe"} if version == "1.0.4" else {APP_EXE},
         {PLUGIN + "/" + name for name in PLUGIN_FILES},
     ][kind]
     with zipfile.ZipFile(path) as z:
@@ -150,7 +172,10 @@ def check_zip(path, kind, version):
             binary = z.read(APP_EXE)
             windows_version(binary, version)
             functional_app(binary, version)
-            pe_offset(z.read("GYDT-camera.exe"))
+            if version == "1.0.4":
+                pe_offset(z.read("GYDT-camera.exe"))
+            else:
+                camera_payload(binary)
         else:
             wordpress(z, version)
 
