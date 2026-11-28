@@ -1,0 +1,415 @@
+diff --git a/gydt-sample-results-importer.php b/gydt-sample-results-importer.php
+--- a/gydt-sample-results-importer.php
++++ b/gydt-sample-results-importer.php
+@@ -46,7 +46,7 @@
+ add_action('admin_post_' . ImportHistory::ACTION, [ImportHistory::class, 'handle']);
+ add_filter('wp_insert_post_empty_content', [Import::class, 'allowSavedZero'], PHP_INT_MAX, 2);
+ AcfContract::register();
+-Spectrum::register(__FILE__);
++Spectrum::register();
+ Updater::register();
+ 
+ function handleUpload(): never
+diff --git a/import.php b/import.php
+--- a/import.php
++++ b/import.php
+@@ -38,6 +38,7 @@
+         'lysergamide_strip' => 'field_5fc6c54ceede7',
+         'client' => 'field_600218e2bf3c7',
+         'notes' => 'field_5c866202bd51e',
++        Spectrum::FIELD => Spectrum::KEY,
+     ];
+ 
+     public static function allowed(): bool
+@@ -112,7 +113,7 @@
+             throw new Rejection('The photo is over the site’s size limit or JPEGs are disabled. No draft was saved.');
+         }
+         if ($package->spectrum !== null) {
+-            Spectrum::preflight(strlen($package->spectrum));
++            Spectrum::preflight($package);
+         }
+         return [self::acfValues($package->data), $localExport->format('Y-m-d H:i:s')];
+     }
+@@ -210,6 +211,7 @@
+         $postId = 0;
+         $attachment = 0;
+         $uploadPath = null;
++        $spectrumFile = null;
+         $inserted = [];
+         self::requireTransactions();
+         $origin = 'gydt-import:' . bin2hex(random_bytes(24));
+@@ -240,13 +242,16 @@
+         $commitSent = false;
+         // WordPress normally runs this even when PHP exits before the request can catch a failure.
+         // Never delete files on an uncertain commit, or if this transaction can no longer be proved.
+-        $shutdown = static function () use ($origin, &$transactionStarted, &$savepoint, &$commitSent, &$inserted, &$uploadPath): void {
++        $shutdown = static function () use ($origin, &$transactionStarted, &$savepoint, &$commitSent, &$inserted, &$uploadPath, &$spectrumFile): void {
+             if (!$transactionStarted || $commitSent) {
+                 return;
+             }
+             try {
+-                if (self::rollbackWrite($origin, $savepoint, $inserted) && $uploadPath !== null) {
+-                    self::removeRolledBackPhoto($uploadPath);
++                if (self::rollbackWrite($origin, $savepoint, $inserted)) {
++                    if ($uploadPath !== null) {
++                        self::removeRolledBackPhoto($uploadPath);
++                    }
++                    Spectrum::removeRolledBack($spectrumFile);
+                 }
+             } finally {
+                 SubmissionLock::release();
+@@ -277,6 +282,11 @@
+                 );
+             }
+ 
++            if ($package->spectrum !== null) {
++                $spectrumId = Spectrum::attach($postId, $draft, $package, $spectrumFile, $inserted);
++                $fields[Spectrum::FIELD] = $spectrumId;
++                self::writeAcf($postId, [Spectrum::FIELD => $spectrumId]);
++            }
+             if (!self::lockedTransaction()) {
+                 throw new UnknownOutcome();
+             }
+@@ -285,8 +295,8 @@
+             if ($attachment) {
+                 self::verifyPhoto($attachment, $postId, $draft['post_author'], $uploadPath, $package->photo);
+             }
+-            if ($package->spectrum !== null) {
+-                Spectrum::insert($postId, $package);
++            if ($package->spectrum !== null && !Spectrum::matchesMedia($postId, $package, $spectrumFile)) {
++                throw new Rejection('WordPress couldn’t verify the existing Spectra File field and its attachment. No draft was saved.');
+             }
+             self::recordCompletion($postId, $package->fingerprint);
+             if (!self::hasCompletion($postId, $package->fingerprint)) {
+@@ -308,7 +318,9 @@
+                 SubmissionLock::rollback();
+             }
+             if ($rolledBack && !$commitSent) {
+-                if ($uploadPath !== null && !self::removeRolledBackPhoto($uploadPath)) {
++                $spectrumRemoved = Spectrum::removeRolledBack($spectrumFile);
++                $photoRemoved = $uploadPath === null || self::removeRolledBackPhoto($uploadPath);
++                if (!$spectrumRemoved || !$photoRemoved) {
+                     throw new Rejection('No draft was saved. Ask an administrator to check the Media Library upload before retrying.');
+                 }
+                 if ($failure instanceof Rejection || $failure instanceof Conflict) {
+@@ -770,7 +782,8 @@
+             if (self::completedFingerprint($id) !== $package->fingerprint) {
+                 throw new Conflict($id, 'No new draft was saved. Review the existing Test Result before trying again.');
+             }
+-            if ($package->spectrum !== null && !Spectrum::matches($id, $package)) {
++            if ($package->spectrum !== null && !Spectrum::matchesMedia($id, $package)
++                && !Spectrum::matchesLegacy($id, $package)) {
+                 throw new UnknownOutcome();
+             }
+             return ['duplicate', $id];
+diff --git a/spectrum.php b/spectrum.php
+--- a/spectrum.php
++++ b/spectrum.php
+@@ -6,16 +6,10 @@
+ {
+     private const ACTION = 'gydt_download_result_spectrum';
+     private const SCHEMA = 'gydt_spectrum_schema';
+-    private const MAX_STORAGE = 1073741824;
+-
+-    public static function register(string $pluginFile): void
+-    {
+-        register_activation_hook($pluginFile, [self::class, 'install']);
+-        add_action('admin_init', static function (): void {
+-            if (current_user_can('activate_plugins') && get_option(self::SCHEMA) !== '1') {
+-                self::install();
+-            }
+-        });
++    // v1.0.4 files remain in their original private store and retain the same access checks.
++    public static function register(): void
++    {
++        add_filter('wp_check_filetype_and_ext', [self::class, 'manualZeroExtension'], PHP_INT_MAX, 3);
+         add_action('add_meta_boxes_results', [self::class, 'addBox']);
+         add_action('admin_post_' . self::ACTION, [self::class, 'download']);
+     }
+@@ -26,85 +20,200 @@
+         return $wpdb->prefix . 'gydt_spectra';
+     }
+ 
+-    public static function install(): void
+-    {
+-        global $wpdb;
+-        // The FK follows only an actual permanent deletion of the exact
+-        // parent row. Trash, edits, publication and failed deletes do nothing.
+-        $previous = $wpdb->suppress_errors();
++    public const FIELD = 'spectra_file';
++    public const KEY = 'field_62156f92fbcc2';
++    private const MIME = 'application/octet-stream';
++
++    private static function acceptValidatedZero(array $type, string $filename): array
++    {
++        // Core treats the valid extension string "0" as empty. The actual
++        // filename and MIME stay unchanged, and all native MIME checks ran.
++        if (($type['ext'] ?? null) === '0' && ($type['type'] ?? null) === self::MIME
++            && empty($type['proper_filename']) && pathinfo($filename, PATHINFO_EXTENSION) === '0'
++            && wp_check_filetype($filename)['type'] === self::MIME) {
++            $type['ext'] = '.0';
++        }
++        return $type;
++    }
++
++    public static function manualZeroExtension(array $type, string $file, string $filename): array
++    {
++        if (($type['ext'] ?? null) !== '0' || !wp_doing_ajax()
++            || ($_POST['action'] ?? null) !== 'upload-attachment' || ($_POST['_acfuploader'] ?? null) !== self::KEY
++            || !verifiedNonce($_REQUEST['_wpnonce'] ?? null, 'media-form')
++            || ($_FILES['async-upload']['tmp_name'] ?? null) !== $file || !is_uploaded_file($file)
++            || !current_user_can('upload_files')) {
++            return $type;
++        }
++        $id = positiveInteger($_POST['post_id'] ?? null);
++        $post = $id ? get_post($id) : null;
++        $field = function_exists('acf_get_field') ? acf_get_field(self::KEY) : false;
++        return $post && $post->post_type === 'results' && current_user_can('edit_post', $id)
++            && ($field['name'] ?? null) === self::FIELD && ($field['type'] ?? null) === 'file'
++            ? self::acceptValidatedZero($type, $filename) : $type;
++    }
++
++    /** The configured ACF field and site's existing media rules are authoritative. */
++    public static function preflight(Package $package, int $postId = 0): array
++    {
++        if (!current_user_can('upload_files') || ($postId && !current_user_can('edit_post', $postId))) {
++            throw new Rejection('This account can’t add a Spectra File. No draft was saved.');
++        }
++        $name = $package->spectrumName;
++        if ($name === null || $package->spectrum === null || strlen($package->spectrum) > wp_max_upload_size()
++            || sanitize_file_name($name) !== $name || wp_check_filetype($name)['type'] !== self::MIME) {
++            throw new Rejection('The Spectra File does not meet the site’s existing filename, size or file-type rules. No draft was saved.');
++        }
++        if (function_exists('acf_validate_attachment') && function_exists('acf_get_field_groups')
++            && function_exists('acf_get_fields') && function_exists('update_field')) {
++            foreach (acf_get_field_groups(['post_type' => 'results', 'post_status' => 'draft', 'post_id' => $postId]) as $group) {
++                foreach (acf_get_fields($group) ?: [] as $field) {
++                    if (($field['key'] ?? null) === self::KEY && ($field['name'] ?? null) === self::FIELD
++                        && ($field['type'] ?? null) === 'file') {
++                        return $field;
++                    }
++                }
++            }
++        }
++        throw new Rejection('The existing Test Results Spectra File field is unavailable. No draft was saved.');
++    }
++
++    /** Attach as native Media Library content, using the same date and field validation as a manual upload. */
++    public static function attach(int $id, array $draft, Package $package, ?array &$owned, array &$inserted): int
++    {
++        if (!Import::lockedTransaction()) {
++            throw new UnknownOutcome();
++        }
++        $field = self::preflight($package, $id);
++        require_once ABSPATH . 'wp-admin/includes/file.php';
++        require_once ABSPATH . 'wp-admin/includes/image.php';
++
++        $date = $draft['post_date']; // media_handle_upload() uses the parent Result's date.
++        $uploads = wp_upload_dir($date);
++        $directory = empty($uploads['error']) ? realpath($uploads['path']) : false;
++        $name = $package->spectrumName;
++        $bytes = $package->spectrum;
++        $tmp = $directory === false ? false : wp_tempnam($name);
++        if (!$tmp) {
++            throw new Rejection('WordPress couldn’t prepare the Spectra File in the Media Library. No draft was saved.');
++        }
++        $expected = $directory . '/' . $name;
++        $moveExact = static function (mixed $move, array $upload, string $path) use ($tmp, $expected, $bytes, &$owned): mixed {
++            if (($upload['tmp_name'] ?? null) !== $tmp) {
++                return $move;
++            }
++            if ($move !== null || realpath(dirname($path)) . '/' . basename($path) !== $expected) {
++                throw new Rejection('The exact Spectra File name could not be reserved. No existing file was changed and no draft was saved.');
++            }
++            $file = @fopen($expected, 'x+b');
++            if ($file === false) {
++                throw new Rejection('The Spectra File name is already in use or can’t be written. No draft was saved.');
++            }
++            try {
++                $stat = fstat($file);
++                if ($stat === false) {
++                    throw new UnknownOutcome();
++                }
++                $owned = ['path' => $expected, 'dev' => $stat['dev'], 'ino' => $stat['ino']];
++                if (fwrite($file, $bytes) !== strlen($bytes) || !fflush($file)) {
++                    throw new Rejection('WordPress couldn’t write the complete Spectra File. No draft was saved.');
++                }
++            } finally {
++                fclose($file);
++            }
++            return true;
++        };
+         try {
+-            $wpdb->query($wpdb->prepare(
+-                'CREATE TABLE IF NOT EXISTS %i (
+-                    result_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+-                    filename VARBINARY(82) NOT NULL,
+-                    sha256 BINARY(64) NOT NULL,
+-                    payload MEDIUMBLOB NOT NULL,
+-                    FOREIGN KEY (result_id) REFERENCES %i (ID) ON DELETE CASCADE
+-                ) ENGINE=InnoDB',
+-                self::table(), $wpdb->posts
+-            ));
+-            if (self::ready()) {
+-                update_option(self::SCHEMA, '1', false);
+-            }
++            if (file_put_contents($tmp, $bytes) !== strlen($bytes)) {
++                throw new Rejection('WordPress couldn’t prepare the complete Spectra File. No draft was saved.');
++            }
++            $upload = ['name' => $name, 'type' => self::MIME, 'tmp_name' => $tmp,
++                'error' => UPLOAD_ERR_OK, 'size' => strlen($bytes)];
++            $errors = acf_validate_attachment($upload, $field, 'upload');
++            foreach (['type=file', 'name=' . ($field['_name'] ?? self::FIELD), 'key=' . self::KEY, ''] as $scope) {
++                $errors = apply_filters('acf/upload_prefilter' . ($scope === '' ? '' : '/' . $scope), $errors, $upload, $field);
++            }
++            if (!empty($errors)) {
++                throw new Rejection('The Spectra File was rejected by the existing Test Results field. No draft was saved.');
++            }
++            $validatedZero = static fn(array $type, string $path, string $filename): array =>
++                $path === $tmp && $filename === $name ? self::acceptValidatedZero($type, $filename) : $type;
++            add_filter('pre_move_uploaded_file', $moveExact, PHP_INT_MAX, 3);
++            add_filter('wp_check_filetype_and_ext', $validatedZero, PHP_INT_MAX, 3);
++            try {
++                $media = wp_handle_sideload($upload, ['test_form' => false], $date);
++            } finally {
++                remove_filter('wp_check_filetype_and_ext', $validatedZero, PHP_INT_MAX);
++                remove_filter('pre_move_uploaded_file', $moveExact, PHP_INT_MAX);
++            }
++            if ($owned === null || ($media['type'] ?? null) !== self::MIME || empty($media['url'])
++                || realpath($media['file'] ?? '') !== $expected) {
++                throw new Rejection('WordPress rejected the Spectra File upload. No draft was saved.');
++            }
++            $attachment = wp_insert_attachment([
++                'post_mime_type' => $media['type'],
++                'guid' => $media['url'],
++                'post_title' => sanitize_text_field(wp_basename($name, '.0')),
++                'post_status' => 'inherit',
++                'post_author' => $draft['post_author'],
++            ], $media['file'], $id, true);
++            if (is_wp_error($attachment) || !$attachment) {
++                throw new Rejection('WordPress couldn’t add the Spectra File to the Media Library. No draft was saved.');
++            }
++            $inserted[] = $attachment;
++            wp_update_attachment_metadata($attachment, wp_generate_attachment_metadata($attachment, $media['file']));
++            return $attachment;
+         } finally {
+-            $wpdb->suppress_errors($previous);
+-        }
+-    }
+-
+-    private static function ready(): bool
+-    {
+-        global $wpdb;
+-        $row = $wpdb->get_row($wpdb->prepare(
+-            "SELECT t.ENGINE, r.DELETE_RULE, k.REFERENCED_TABLE_NAME, k.REFERENCED_COLUMN_NAME
+-             FROM information_schema.TABLES t
+-             JOIN information_schema.KEY_COLUMN_USAGE k ON k.TABLE_SCHEMA=t.TABLE_SCHEMA AND k.TABLE_NAME=t.TABLE_NAME
+-             JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA
+-                AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME
+-             WHERE t.TABLE_SCHEMA=DATABASE() AND t.TABLE_NAME=%s AND k.COLUMN_NAME='result_id'
+-               AND k.REFERENCED_TABLE_SCHEMA=DATABASE()",
+-            self::table()
+-        ), ARRAY_A);
+-        return $wpdb->last_error === '' && $row === [
+-            'ENGINE' => 'InnoDB', 'DELETE_RULE' => 'CASCADE',
+-            'REFERENCED_TABLE_NAME' => $wpdb->posts, 'REFERENCED_COLUMN_NAME' => 'ID',
+-        ];
+-    }
+-
+-    public static function preflight(int $bytes): void
+-    {
+-        global $wpdb;
+-        if (get_option(self::SCHEMA) !== '1' || !self::ready()) {
+-            throw new Rejection('Private spectrum storage is unavailable. Ask an administrator to check the importer setup.');
+-        }
+-        // Hex literals have no charset conversion and no binary data enters post meta.
+-        $packet = $wpdb->get_var('SELECT @@session.max_allowed_packet');
+-        if ($wpdb->last_error !== '' || !is_numeric($packet) || (int) $packet < $bytes * 2 + 8192) {
+-            throw new Rejection('This spectrum is too large for the site’s private database storage.');
+-        }
+-        $used = $wpdb->get_var($wpdb->prepare('SELECT COALESCE(SUM(OCTET_LENGTH(payload)), 0) FROM %i', self::table()));
+-        if ($wpdb->last_error !== '' || !is_numeric($used) || (int) $used > self::MAX_STORAGE - $bytes) {
+-            throw new Rejection('Private spectrum storage is full or unavailable. No draft was saved. Ask an administrator to check storage.');
+-        }
+-    }
+-
+-    public static function insert(int $id, Package $package): void
+-    {
+-        global $wpdb;
+-        if (!Import::lockedTransaction() || $package->spectrum === null || $package->spectrumName === null
+-            || $package->spectrumHash === null) {
+-            throw new UnknownOutcome();
+-        }
+-        if ($wpdb->query($wpdb->prepare(
+-            'INSERT INTO %i (result_id, filename, sha256, payload) VALUES (%d, %s, %s, UNHEX(%s))',
+-            self::table(), $id, $package->spectrumName, $package->spectrumHash, bin2hex($package->spectrum)
+-        )) !== 1 || !self::matches($id, $package)) {
+-            throw new Rejection('WordPress could not verify the private spectrum. No draft was saved.');
+-        }
+-    }
+-
+-    public static function matches(int $id, Package $package): bool
+-    {
+-        global $wpdb;
++            if (is_file($tmp)) {
++                wp_delete_file($tmp);
++            }
++        }
++    }
++
++    public static function matchesMedia(int $id, Package $package, ?array $owned = null): bool
++    {
++        $values = get_post_meta($id, self::FIELD, false);
++        $key = get_post_meta($id, '_' . self::FIELD, false);
++        $attachmentId = count($values) === 1 ? positiveInteger($values[0]) : 0;
++        if (!$attachmentId || $key !== [self::KEY]) {
++            return false;
++        }
++        $attachment = get_post($attachmentId);
++        $path = get_attached_file($attachmentId, true);
++        return $attachment && $attachment->post_type === 'attachment' && $attachment->post_status === 'inherit'
++            && (int) $attachment->post_parent === $id && $attachment->post_mime_type === self::MIME
++            && is_string($path) && !is_link($path) && is_file($path) && wp_basename($path) === $package->spectrumName
++            && ($owned === null || ($owned['path'] === $path && self::ownsFile($owned)))
++            && filesize($path) === strlen($package->spectrum)
++            && hash_file('sha256', $path) === $package->spectrumHash;
++    }
++
++    private static function ownsFile(array $owned): bool
++    {
++        clearstatcache(true, $owned['path']);
++        $stat = @lstat($owned['path']);
++        return $stat && !is_link($owned['path']) && is_file($owned['path'])
++            && $stat['dev'] === $owned['dev'] && $stat['ino'] === $owned['ino'];
++    }
++
++    public static function removeRolledBack(?array $owned): bool
++    {
++        if ($owned === null) {
++            return true;
++        }
++        if (!self::ownsFile($owned)) {
++            return false;
++        }
++        wp_delete_file_from_directory($owned['path'], dirname($owned['path']));
++        return !file_exists($owned['path']) && !is_link($owned['path']);
++    }
++
++    public static function matchesLegacy(int $id, Package $package): bool
++    {
++        global $wpdb;
++        if (get_option(self::SCHEMA) !== '1') {
++            return false;
++        }
+         $row = $wpdb->get_row($wpdb->prepare(
+             'SELECT filename, sha256, SHA2(payload, 256) AS actual FROM %i WHERE result_id=%d',
+             self::table(), $id
+@@ -138,7 +247,7 @@
+             return;
+         }
+         add_meta_box(
+-            'gydt-private-spectrum', 'OPUS spectrum', static function (\WP_Post $result): void {
++            'gydt-private-spectrum', 'Legacy OPUS spectrum', static function (\WP_Post $result): void {
+                 $url = add_query_arg(['action' => self::ACTION, 'result' => $result->ID], admin_url('admin-post.php'));
+                 $url = wp_nonce_url($url, self::ACTION . ':' . $result->ID);
+                 printf('<p><a class="button" href="%s">Download spectrum</a></p>', esc_url($url));

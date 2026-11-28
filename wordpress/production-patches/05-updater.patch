@@ -3,7 +3,7 @@ diff --git a/gydt-sample-results-importer.php b/gydt-sample-results-importer.php
 +++ b/gydt-sample-results-importer.php
 @@ -4,6 +4,7 @@
   * Description: Import format-1 sample ZIPs into editable Test Results drafts.
-  * Version: 1.0.4
+  * Version: 1.0.5
   * Requires PHP: 8.1
 + * Update URI: https://github.com/csd113/GYDT-Reporting
   */

@@ -2,7 +2,7 @@
 set -eu
 
 die() { printf '%s\n' "$1" >&2; exit 2; }
-[ "$#" -eq 2 ] || die "Usage: $0 /path/to/released-v1.0.2.zip /path/to/new-v1.0.4.zip"
+[ "$#" -eq 2 ] || die "Usage: $0 /path/to/released-v1.0.2.zip /path/to/new-v1.0.5.zip"
 
 source_dir=$(cd -P "$(dirname "$0")" && pwd)
 case "$1" in /*) baseline=$1 ;; *) baseline="$PWD/$1" ;; esac
@@ -23,7 +23,7 @@ plugin=gydt-sample-results-importer
 UNZIP= UNZIPOPT= unzip -q "$baseline" -d "$stage"
 (
     cd "$stage/$plugin"
-    for patch in 01-private-spectra 02-shared-uploads 03-canonical-jpg 04-version 05-updater 06-rollover-boundary; do
+    for patch in 01-private-spectra 02-shared-uploads 03-canonical-jpg 04-version 05-updater 06-rollover-boundary 07-native-spectra; do
         git apply --unidiff-zero "$source_dir/production-patches/$patch.patch"
     done
     cp "$source_dir/production-patches/updater.php" updater.php
@@ -32,7 +32,7 @@ UNZIP= UNZIPOPT= unzip -q "$baseline" -d "$stage"
         [ -f "$f" ] && [ ! -L "$f" ] || die "Missing production plugin source file."
         TZ=UTC touch -t 200001010000 "$f"
     done
-    [ "$(sed -n '/^ \* Version: /p' "$plugin.php")" = ' * Version: 1.0.4' ] || die "Wrong plugin version."
+    [ "$(sed -n '/^ \* Version: /p' "$plugin.php")" = ' * Version: 1.0.5' ] || die "Wrong plugin version."
 )
 (
     cd "$stage"
