@@ -78,10 +78,21 @@ static void list() {
 }
 static void preview(hstring const& id) {
     auto all = cameras();
-    auto match = std::find_if(all.begin(), all.end(), [&](auto const& item) {
-        return item.device == id;
-    });
-    if (match == all.end()) throw std::runtime_error("selected camera absent");
+    auto match = all.begin();
+    if (id.empty()) {
+        if (all.size() != 1) {
+            word(all.empty() ? 1u : 2u);
+            return;
+        }
+    } else {
+        match = std::find_if(all.begin(), all.end(), [&](auto const& item) {
+            return item.device == id;
+        });
+        if (match == all.end()) {
+            word(3u);
+            return;
+        }
+    }
     MediaCapture capture;
     MediaCaptureInitializationSettings settings;
     settings.SourceGroup(match->group);
@@ -100,6 +111,10 @@ static void preview(hstring const& id) {
     if (reader.StartAsync().get() != MediaFrameReaderStartStatus::Success) {
         throw std::runtime_error("could not start color video");
     }
+    word(0u);
+    string(match->device);
+    string(match->info.DeviceInformation().Name());
+    if (std::fflush(stdout) != 0) throw std::runtime_error("closed pipe");
     // An in-memory packet is produced only when the desktop asks. There is no queue.
     uint64_t issued = 0;
     while (!*lost && std::getchar() == 'f') {
@@ -152,7 +167,8 @@ int wmain(int argc, wchar_t** argv) {
         init_apartment();
         std::wstring_view mode(argv[2]);
         if (mode == L"list" && argc == 3) list();
-        else if (mode == L"preview" && argc == 4) preview(hstring(argv[3]));
+        else if (mode == L"preview" && (argc == 3 || argv[3][0] != 0))
+            preview(argc == 4 ? hstring(argv[3]) : hstring{});
         else return 1;
         return std::fflush(stdout) == 0 ? 0 : 1;
     } catch (hresult_error const& e) {

@@ -33,14 +33,58 @@ if ($seen.Count -ne $expected.Count) { throw 'The synthetic input list is incomp
 
 $triple = 'x86_64-pc-windows-msvc'
 $target = Join-Path $root 'target/gydt-windows-profile'
+$profile = [IO.Path]::GetFullPath([Environment]::GetFolderPath('UserProfile'))
+$cargoHome = if ($env:CARGO_HOME) {
+    [IO.Path]::GetFullPath($env:CARGO_HOME, $root)
+} else {
+    Join-Path $profile '.cargo'
+}
+$privateRoots = @($root, $profile, $cargoHome)
+$remaps = @()
+foreach ($entry in @(
+    @{ Path = $profile; Public = '/build-home/' },
+    @{ Path = $cargoHome; Public = '/cargo/' },
+    @{ Path = $root; Public = '/gydt-source/' }
+) | Sort-Object -Property { $_.Path.Length }) {
+    $native = $entry.Path.TrimEnd('\', '/')
+    $remaps += "--remap-path-prefix=$native\=$($entry.Public)"
+    $remaps += "--remap-path-prefix=$($native.Replace('\', '/'))/=$($entry.Public)"
+}
+$remaps += '--remap-path-scope=object'
+
+# Cargo's encoded form preserves spaces in a Windows home or workspace path.
+# Apply the remaps to dependencies as well as the app.
+$originalEncoded = $env:CARGO_ENCODED_RUSTFLAGS
+$existing = if ($null -ne $originalEncoded) {
+    $originalEncoded.Split([char]31)
+} elseif ($null -ne $env:RUSTFLAGS) {
+    $env:RUSTFLAGS -split '\s+'
+} elseif ($env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS) {
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS -split '\s+'
+}
+$env:CARGO_ENCODED_RUSTFLAGS = (@($existing | Where-Object { $_ }) + $remaps) -join [char]31
 Push-Location -LiteralPath $root
 try {
     cargo build --release --locked --no-default-features --target $triple --bin gydt-results-compiler --target-dir $target
     if ($LASTEXITCODE -ne 0) { throw 'The Windows build failed.' }
 } finally {
     Pop-Location
+    $env:CARGO_ENCODED_RUSTFLAGS = $originalEncoded
 }
 $compiled = Join-Path $target "$triple/release/gydt-results-compiler.exe"
+$binaryBytes = [IO.File]::ReadAllBytes($compiled)
+$asciiView = [Text.Encoding]::Latin1.GetString($binaryBytes)
+$wideView = [Text.Encoding]::Unicode.GetString($binaryBytes)
+$wideOddView = [Text.Encoding]::Unicode.GetString($binaryBytes, 1, $binaryBytes.Length - 1)
+foreach ($private in $privateRoots) {
+    foreach ($pathForm in @($private, $private.Replace('\', '/'))) {
+        foreach ($view in @($asciiView, $wideView, $wideOddView)) {
+            if ($view.Contains($pathForm, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'The Windows executable still contains a private builder or workspace path.'
+            }
+        }
+    }
+}
 # Check the PE machine type before labelling the package x64.
 $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($compiled))
 try {
@@ -61,15 +105,13 @@ try {
     $binary = Join-Path $stage $name
     $zip = Join-Path $stage 'application.zip'
     Copy-Item -LiteralPath $compiled -Destination $binary
-    $camera = Join-Path $stage 'GYDT-camera.exe'
-    & (Join-Path $PSScriptRoot 'build-camera.ps1') -OutputPath $camera
-    Compress-Archive -LiteralPath @($binary, $camera) -DestinationPath $zip -CompressionLevel Optimal
+    Compress-Archive -LiteralPath $binary -DestinationPath $zip -CompressionLevel Optimal
     $ready = [IO.Compression.ZipFile]::OpenRead($zip)
     try {
-        if ($ready.Entries.Count -ne 2 -or
-            $ready.GetEntry($name).Length -ne (Get-Item -LiteralPath $binary).Length -or
-            $ready.GetEntry('GYDT-camera.exe').Length -ne (Get-Item -LiteralPath $camera).Length) {
-            throw 'The package does not contain exactly the app and camera helper.'
+        if ($ready.Entries.Count -ne 1 -or
+            $ready.Entries[0].FullName -cne $name -or
+            $ready.Entries[0].Length -ne (Get-Item -LiteralPath $binary).Length) {
+            throw 'The package must contain only the GYDT application executable.'
         }
     } finally {
         $ready.Dispose()

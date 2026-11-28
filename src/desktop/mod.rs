@@ -1,4 +1,6 @@
 mod archive;
+#[cfg(all(target_os = "windows", target_env = "msvc"))]
+mod camera_helper;
 mod export;
 mod model;
 mod store;
@@ -187,6 +189,9 @@ struct SettingsPane {
     draft: Settings,
     error: Option<String>,
     section: ui::SettingsSection,
+    jump: Option<ui::SettingsSection>,
+    #[cfg(target_os = "windows")]
+    cameras: webcam::SettingsCameras,
 }
 
 struct App {
@@ -589,6 +594,9 @@ impl App {
                 draft: saved.clone(),
                 error: None,
                 section: ui::SettingsSection::Location,
+                jump: None,
+                #[cfg(target_os = "windows")]
+                cameras: webcam::SettingsCameras::new(self.store.camera_settings_root().to_owned()),
             });
         }
         self.show_settings = true;
@@ -762,6 +770,7 @@ impl App {
             self.dialog = Some(Dialog::Webcam(Box::new(webcam::Preview::new(
                 sample,
                 self.book.settings.webcam_camera.clone(),
+                self.store.camera_settings_root().to_owned(),
             ))));
         }
     }
@@ -776,10 +785,12 @@ impl App {
     }
 
     #[cfg(target_os = "windows")]
-    fn remember_camera(&mut self, raw_id: String) {
-        if self.book.settings.webcam_camera.as_ref() != Some(&raw_id) {
+    fn remember_camera(&mut self, camera: &webcam::Camera) {
+        if self.book.settings.webcam_camera.as_ref() != Some(&camera.id)
+            || self.book.settings.webcam_camera_name.as_ref() != Some(&camera.name)
+        {
             let mut next = self.book.clone();
-            next.settings.webcam_camera = Some(raw_id);
+            webcam::set_selection(&mut next.settings, camera);
             if self.store.save_book(&next).is_ok() {
                 self.book = next;
             }
@@ -816,10 +827,6 @@ impl App {
     }
 
     fn dropped(&mut self, ctx: &Context) {
-        #[cfg(target_os = "windows")]
-        if matches!(self.dialog, Some(Dialog::Webcam(_))) {
-            return;
-        }
         let drop = ctx.input(|input| input.raw.dropped_files.clone());
         if drop.is_empty() || self.worker.busy() {
             return;
@@ -838,6 +845,17 @@ impl App {
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .unwrap_or_default();
+            #[cfg(target_os = "windows")]
+            if matches!(self.dialog, Some(Dialog::Webcam(_))) {
+                if model::PHOTO_EXTENSIONS
+                    .iter()
+                    .any(|photo| ext.eq_ignore_ascii_case(photo))
+                {
+                    self.dialog = None;
+                    self.add_photo(ctx, path, true);
+                }
+                return;
+            }
             if ext.eq_ignore_ascii_case("zip") {
                 self.open_zip(ctx, path);
                 return;

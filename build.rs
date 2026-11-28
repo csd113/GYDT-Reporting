@@ -7,6 +7,8 @@ use std::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=assets/app-icon.ico");
     println!("cargo:rerun-if-changed=assets/app-icon.rc");
+    println!("cargo:rerun-if-changed=windows/GYDT-camera.cpp");
+    println!("cargo:rerun-if-changed=windows/build-camera.ps1");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
         || env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc")
     {
@@ -76,6 +78,55 @@ END
         "cargo:rustc-link-arg-bin=gydt-results-compiler={}",
         output.display()
     );
+    bundle_camera(&output_dir)?;
+    Ok(())
+}
+
+fn bundle_camera(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("x86_64") {
+        return Err("The bundled camera helper requires a Windows x64 build.".into());
+    }
+    let helper = output.join("gydt-camera-build.exe");
+    let hash = output.join("gydt-camera-build.sha256");
+    match fs::remove_file(&helper) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let status = Command::new("pwsh")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            "windows/build-camera.ps1",
+            "-OutputPath",
+        ])
+        .arg(&helper)
+        .arg("-DigestPath")
+        .arg(&hash)
+        .status()?;
+    if !status.success() {
+        return Err("Could not build the Windows camera helper.".into());
+    }
+    let executable = fs::read(&helper)?;
+    let digest = fs::read_to_string(&hash)?;
+    let digest = digest.trim();
+    if !executable.starts_with(b"MZ")
+        || executable.len() > 8 * 1024 * 1024
+        || digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("Invalid Windows camera helper build output.".into());
+    }
+    // Keep length and digest with the bytes so the release gate can verify the
+    // embedded PE independently, without running the application.
+    let mut envelope = b"GYDT-CAMERA-BUNDLE-1\0".to_vec();
+    envelope.extend_from_slice(&u32::try_from(executable.len())?.to_le_bytes());
+    envelope.extend_from_slice(digest.as_bytes());
+    envelope.extend_from_slice(&executable);
+    fs::write(output.join("camera.bundle"), envelope)?;
     Ok(())
 }
 

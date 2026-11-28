@@ -29,6 +29,9 @@ pub(super) struct Settings {
     #[cfg(target_os = "windows")]
     #[serde(default)]
     pub(super) webcam_camera: Option<String>,
+    #[cfg(target_os = "windows")]
+    #[serde(default)]
+    pub(super) webcam_camera_name: Option<String>,
 }
 
 impl Settings {
@@ -44,6 +47,8 @@ impl Settings {
             webcam_enabled: false,
             #[cfg(target_os = "windows")]
             webcam_camera: None,
+            #[cfg(target_os = "windows")]
+            webcam_camera_name: None,
         }
     }
 
@@ -87,6 +92,14 @@ impl Settings {
         }
         if edited.webcam_enabled != original.webcam_enabled {
             next.webcam_enabled = edited.webcam_enabled;
+        }
+        #[cfg(target_os = "windows")]
+        if edited.webcam_camera != original.webcam_camera
+            || edited.webcam_camera_name != original.webcam_camera_name
+        {
+            next.webcam_camera.clone_from(&edited.webcam_camera);
+            next.webcam_camera_name
+                .clone_from(&edited.webcam_camera_name);
         }
         for ((current, original), edited) in next
             .codes
@@ -256,6 +269,11 @@ impl Store {
             .open(root.join("desktop.lock"))?;
         lock.try_lock().map_err(|error| format!("Can't lock local records. Close any other GYDT Sample Reporting window and retry. {error}"))?;
         Ok(Self { root, _lock: lock })
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(super) fn camera_settings_root(&self) -> &Path {
+        &self.root
     }
 
     pub(super) fn open_data_folder(&self) -> Result<()> {

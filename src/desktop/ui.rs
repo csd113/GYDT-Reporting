@@ -364,21 +364,32 @@ impl App {
             if edit.date_changed {
                 self.rescan();
             }
-            if edit.photo {
-                if self
-                    .tabs
-                    .get(index)
-                    .is_some_and(|tab| tab.draft.photo.is_some())
-                    || self.webcam_enabled()
-                {
-                    self.dialog = Some(Dialog::PhotoOptions);
-                } else {
-                    self.choose_photo(ctx);
-                }
+            match edit.photo {
+                Some(PhotoEdit::Activate) => self.activate_sample_photo(ctx, index),
+                Some(PhotoEdit::Browse) => self.choose_photo(ctx),
+                Some(PhotoEdit::Options) => self.dialog = Some(Dialog::PhotoOptions),
+                None => {}
             }
         }
         if self.footer(ui, enabled) {
             self.export_active(ctx);
+        }
+    }
+
+    fn activate_sample_photo(&mut self, ctx: &Context, index: usize) {
+        #[cfg(target_os = "windows")]
+        if self.webcam_enabled() {
+            self.open_webcam();
+            return;
+        }
+        if self
+            .tabs
+            .get(index)
+            .is_some_and(|tab| tab.draft.photo.is_some())
+        {
+            self.dialog = Some(Dialog::PhotoOptions);
+        } else {
+            self.choose_photo(ctx);
         }
     }
 
@@ -390,6 +401,7 @@ impl App {
             .and_then(|index| self.contact_source_index(index))
             .and_then(|source| self.tabs.get(source))
             .map(|source| short_tab(&source.draft));
+        let webcam = self.webcam_enabled();
         let Some((index, tab)) = self
             .active
             .and_then(|index| self.tabs.get_mut(index).map(|tab| (index, tab)))
@@ -429,6 +441,7 @@ impl App {
                                     folder_chosen,
                                     &self.profile,
                                     source_label.as_deref(),
+                                    webcam,
                                 )
                             })
                             .inner
@@ -863,11 +876,17 @@ enum ContactEdit {
     Detach,
 }
 
+enum PhotoEdit {
+    Activate,
+    Browse,
+    Options,
+}
+
 #[derive(Default)]
 struct FormEdit {
     date_changed: bool,
     prior_site: Option<Site>,
-    photo: bool,
+    photo: Option<PhotoEdit>,
     contact: Option<ContactEdit>,
 }
 
@@ -878,11 +897,12 @@ fn sample_form(
     folder_chosen: bool,
     profile: &Profile,
     contact_label: Option<&str>,
+    webcam: bool,
 ) -> FormEdit {
     let before = tab.draft.clone();
     let tab_missing = tab.missing;
     let provisional = tab.origin.is_provisional();
-    let mut photo = false;
+    let mut photo = None;
     let mut outcome = FormEdit::default();
     Frame::new()
         .inner_margin(Margin {
@@ -929,6 +949,7 @@ fn sample_form(
                         tab.thumbnail.as_ref(),
                         tab_missing,
                         profile,
+                        webcam,
                     );
                 }
             };
@@ -1200,10 +1221,11 @@ fn right_column(
     thumbnail: Option<&egui::TextureHandle>,
     missing: bool,
     profile: &Profile,
-) -> bool {
+    webcam: bool,
+) -> Option<PhotoEdit> {
     ui.spacing_mut().item_spacing.y = 12.0;
     let width = ui.available_width();
-    let mut photo = false;
+    let mut photo = None;
     let attachment = draft.photo.as_ref();
     split(
         ui,
@@ -1222,7 +1244,19 @@ fn right_column(
             );
         },
         |ui| {
-            photo = photo_target(ui, attachment, thumbnail);
+            if photo_target(ui, attachment, thumbnail, webcam) {
+                photo = Some(PhotoEdit::Activate);
+            }
+            if webcam {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.link("Browse JPG…").clicked() {
+                        photo = Some(PhotoEdit::Browse);
+                    }
+                    if attachment.is_some() && ui.link("Options…").clicked() {
+                        photo = Some(PhotoEdit::Options);
+                    }
+                });
+            }
         },
     );
     site_field(
@@ -1255,15 +1289,22 @@ fn photo_target(
     ui: &mut Ui,
     attachment: Option<&PhotoCopy>,
     thumbnail: Option<&egui::TextureHandle>,
+    webcam: bool,
 ) -> bool {
     let size = vec2(ui.available_width(), 132.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let response = response.on_hover_text(attachment.map_or("Attach a JPEG", |photo| &photo.name));
+    let response = if webcam {
+        response.on_hover_text("Open live camera preview or drop a JPEG")
+    } else {
+        response.on_hover_text(attachment.map_or("Attach a JPEG", |photo| &photo.name))
+    };
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            if attachment.is_some() {
+            if webcam {
+                "Open live camera preview"
+            } else if attachment.is_some() {
                 "Sample photo attached"
             } else {
                 "Attach sample photo"
@@ -2169,12 +2210,12 @@ fn settings_view(ui: &mut Ui, settings: &mut SettingsPane, profile: &Profile) ->
     let width = ui.available_width();
     let height = (ui.available_height() - FOOTER_HEIGHT).max(50.0);
     let mut action = SettingsAction::None;
-    let mut section = None;
+    let mut section = settings.jump.take();
     ui.allocate_ui(vec2(width, height), |ui| {
         ui.set_min_height(height);
         column_pair(ui, 164.0, 0.0, |ui, sidebar| {
             if sidebar {
-                section = settings_sidebar(ui, height, settings.section);
+                section = settings_sidebar(ui, height, settings.section).or(section);
             } else {
                 ScrollArea::vertical()
                     .id_salt("settings content")
@@ -2311,11 +2352,18 @@ fn settings_sections(
             if settings.draft.attach_opus {
                 hint(
                     ui,
-                    "WordPress uploads with OPUS require the production importer v1.0.4.",
+                    "WordPress uploads with OPUS require the production importer v1.0.4 or newer.",
                 );
             }
             #[cfg(target_os = "windows")]
-            ui.checkbox(&mut settings.draft.webcam_enabled, "Enable webcam capture");
+            {
+                ui.checkbox(&mut settings.draft.webcam_enabled, "Enable webcam capture");
+                if settings.draft.webcam_enabled {
+                    settings.cameras.show(ui, &mut settings.draft);
+                } else {
+                    settings.cameras.clear();
+                }
+            }
             if let Some(error) = &settings.error {
                 ui.label(RichText::new(error).color(INVALID));
             }
@@ -2464,9 +2512,11 @@ enum ModalAction {
     #[cfg(target_os = "windows")]
     StartWebcam,
     #[cfg(target_os = "windows")]
-    RememberWebcam(String),
+    CameraSettings,
     #[cfg(target_os = "windows")]
-    UseWebcam(PhotoCopy, String),
+    RememberWebcam(super::webcam::Camera),
+    #[cfg(target_os = "windows")]
+    UseWebcam(PhotoCopy),
     Replace,
     Remove,
     Repeat,
@@ -2524,20 +2574,31 @@ impl App {
                     self.begin_export(ctx, selection);
                 }
             }
-            ModalAction::Photo => self.choose_photo(ctx),
+            ModalAction::Photo => {
+                // Release the camera before blocking on the native file dialog.
+                drop(dialog);
+                self.choose_photo(ctx);
+            }
             #[cfg(target_os = "windows")]
             ModalAction::StartWebcam => self.open_webcam(),
             #[cfg(target_os = "windows")]
-            ModalAction::RememberWebcam(id) => {
-                self.remember_camera(id);
+            ModalAction::CameraSettings => {
+                drop(dialog);
+                self.open_settings();
+                if let Some(settings) = &mut self.settings {
+                    settings.jump = Some(SettingsSection::Export);
+                }
+            }
+            #[cfg(target_os = "windows")]
+            ModalAction::RememberWebcam(camera) => {
+                self.remember_camera(&camera);
                 self.dialog = Some(dialog);
             }
             #[cfg(target_os = "windows")]
-            ModalAction::UseWebcam(photo, key) => {
+            ModalAction::UseWebcam(photo) => {
                 if let Dialog::Webcam(preview) = dialog {
                     let id = preview.sample;
                     drop(preview);
-                    self.remember_camera(key);
                     self.attach_webcam(ctx, id, photo);
                 }
             }
@@ -2593,8 +2654,11 @@ impl App {
                 modal_title(ui, "Sample photo");
                 ui.label("Take a photo of the sample before crushing it, then attach the .jpg or .jpeg here.");
                 #[cfg(target_os = "windows")]
-                if self.webcam_enabled() && ui.button("Take photo…").clicked() {
-                    return ModalAction::StartWebcam;
+                if self.webcam_enabled() {
+                    if ui.button("Take Image").clicked() {
+                        return ModalAction::StartWebcam;
+                    }
+                    return dialog_buttons(ui, "Skip", "Browse JPG…", ModalAction::Photo);
                 }
                 dialog_buttons(ui, "Close", "Attach photo…", ModalAction::Photo)
             }
@@ -2609,8 +2673,10 @@ impl App {
                 match preview.show(ui) {
                     super::webcam::Action::Keep => ModalAction::Keep,
                     super::webcam::Action::Cancel => ModalAction::Dismiss,
-                    super::webcam::Action::Remember(id) => ModalAction::RememberWebcam(id),
-                    super::webcam::Action::Use(photo, key) => ModalAction::UseWebcam(photo, key),
+                    super::webcam::Action::Browse => ModalAction::Photo,
+                    super::webcam::Action::Settings => ModalAction::CameraSettings,
+                    super::webcam::Action::Remember(camera) => ModalAction::RememberWebcam(camera),
+                    super::webcam::Action::Use(photo) => ModalAction::UseWebcam(photo),
                 }
             }
             Dialog::PhotoOptions => {
@@ -2621,10 +2687,6 @@ impl App {
                     .and_then(|tab| tab.draft.photo.as_ref());
                 if let Some(photo) = current {
                     ui.label(&photo.name);
-                }
-                #[cfg(target_os = "windows")]
-                if self.webcam_enabled() && ui.button("Take photo…").clicked() {
-                    return ModalAction::StartWebcam;
                 }
                 ui.horizontal(|ui| {
                     if current.is_some() && ui.button("Remove photo").clicked() {

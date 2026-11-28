@@ -1,28 +1,47 @@
 use std::{
     io::{self, Read, Write},
-    os::windows::process::CommandExt as _,
-    path::PathBuf,
-    process::{Child, Command, Stdio},
+    path::{Path, PathBuf},
+    process::Child,
     sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
 
+#[cfg(target_env = "msvc")]
+use std::{os::windows::process::CommandExt as _, process::Stdio};
+
 use eframe::egui::{self, Color32, ColorImage, Context, TextureHandle, Ui};
 use image::{ExtendedColorType, codecs::jpeg::JpegEncoder};
 use uuid::Uuid;
 
-use super::model::{PhotoCopy, Result};
+use super::{
+    model::{PhotoCopy, Result},
+    store::Settings,
+};
 
-const HELPER: &str = "GYDT-camera.exe";
 const TICK: Duration = Duration::from_millis(80);
 const START_LIMIT: Duration = Duration::from_secs(6);
 const FRESH_LIMIT: Duration = Duration::from_millis(850);
 
-#[derive(Clone)]
-struct Camera {
-    id: String,
-    name: String,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Camera {
+    pub(super) id: String,
+    pub(super) name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unavailable {
+    NoCamera,
+    ChooseCamera,
+    Disconnected,
+}
+
+type OpenReply = std::result::Result<Camera, Unavailable>;
+
+#[derive(Clone, Copy)]
+enum Request<'a> {
+    List,
+    Preview(Option<&'a str>),
 }
 
 #[derive(Clone)]
@@ -73,6 +92,7 @@ impl Frame {
 #[derive(Default)]
 struct Mailbox {
     devices: Option<Vec<Camera>>,
+    opened: Option<OpenReply>,
     latest: Option<Frame>,
     ended: bool,
 }
@@ -124,6 +144,19 @@ fn devices(pipe: &mut impl Read) -> io::Result<Vec<Camera>> {
     Ok(values)
 }
 
+fn open_reply(pipe: &mut impl Read) -> io::Result<OpenReply> {
+    Ok(match word(pipe)? {
+        0 => Ok(Camera {
+            id: string(pipe)?,
+            name: string(pipe)?,
+        }),
+        1 => Err(Unavailable::NoCamera),
+        2 => Err(Unavailable::ChooseCamera),
+        3 => Err(Unavailable::Disconnected),
+        _ => return Err(invalid()),
+    })
+}
+
 fn frame(pipe: &mut impl Read) -> io::Result<Frame> {
     let width = word(pipe)?;
     let height = word(pipe)?;
@@ -140,43 +173,74 @@ fn frame(pipe: &mut impl Read) -> io::Result<Frame> {
     })
 }
 
-fn helper() -> io::Result<PathBuf> {
-    Ok(std::env::current_exe()?.with_file_name(HELPER))
+#[cfg(target_env = "msvc")]
+fn camera_child(settings: &Path, request: Request<'_>) -> io::Result<Child> {
+    if matches!(request, Request::Preview(Some(""))) {
+        return Err(invalid());
+    }
+    let helper = super::camera_helper::prepare(settings)?;
+    let system = winsafe::GetSystemDirectory().map_err(io::Error::other)?;
+    let mut command = std::process::Command::new(&helper.path);
+    command
+        .current_dir(system)
+        .arg(std::process::id().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    match request {
+        Request::List => {
+            command.arg("list");
+        }
+        Request::Preview(id) => {
+            command.arg("preview");
+            if let Some(id) = id {
+                command.arg(id);
+            }
+        }
+    }
+    let child = command.spawn();
+    drop(helper);
+    child
+}
+
+#[cfg(not(target_env = "msvc"))]
+fn camera_child(_settings: &Path, _request: Request<'_>) -> io::Result<Child> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 impl Broker {
-    fn start(id: Option<&str>) -> io::Result<Self> {
-        let mut command = Command::new(helper()?);
-        command
-            .arg(std::process::id().to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        if let Some(id) = id {
-            command.arg("preview").arg(id);
-        } else {
-            command.arg("list");
-        }
-        let mut child = command.spawn()?;
+    fn start(settings: &Path, request: Request<'_>) -> io::Result<Self> {
+        let stream = matches!(request, Request::Preview(_));
+        let mut child = camera_child(settings, request)?;
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
         let mut output = child.stdout.take().ok_or_else(invalid)?;
         let mut input = child.stdin.take().ok_or_else(invalid)?;
-        let stream = id.is_some();
         let copy = Arc::clone(&mailbox);
         let now = Instant::now();
         if let Err(err) = thread::Builder::new()
             .name("webcam-pipe".into())
             .spawn(move || {
                 if stream {
-                    while input.write_all(b"f").is_ok() {
-                        let Ok(current) = frame(&mut output) else {
-                            break;
-                        };
-                        if let Ok(mut state) = copy.lock() {
-                            state.latest = Some(current);
+                    let success = if let Ok(reply) = open_reply(&mut output)
+                        && let Ok(mut state) = copy.lock()
+                    {
+                        let started = reply.is_ok();
+                        state.opened = Some(reply);
+                        started
+                    } else {
+                        false
+                    };
+                    if success {
+                        while input.write_all(b"f").is_ok() {
+                            let Ok(current) = frame(&mut output) else {
+                                break;
+                            };
+                            if let Ok(mut state) = copy.lock() {
+                                state.latest = Some(current);
+                            }
+                            thread::sleep(TICK);
                         }
-                        thread::sleep(TICK);
                     }
                 } else if let Ok(list) = devices(&mut output)
                     && let Ok(mut state) = copy.lock()
@@ -216,21 +280,161 @@ impl Drop for Broker {
     }
 }
 
-/// One modal, one sample ID and one broker generation. A different camera can
-/// be opened only after the old process has exited. Each process has its own
-/// mailbox, so an old thread cannot publish into a new session.
-enum Request {
-    List,
-    Stream(String),
+/// Settings lists device names, but never starts a preview.
+pub(super) struct SettingsCameras {
+    root: PathBuf,
+    broker: Option<Broker>,
+    listed: Option<Vec<Camera>>,
+    failed: bool,
 }
 
+impl SettingsCameras {
+    pub(super) fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            broker: None,
+            listed: None,
+            failed: false,
+        }
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.broker = None;
+        self.listed = None;
+        self.failed = false;
+    }
+
+    fn refresh(&mut self) {
+        self.clear();
+        match Broker::start(&self.root, Request::List) {
+            Ok(broker) => self.broker = Some(broker),
+            Err(_) => self.failed = true,
+        }
+    }
+
+    fn receive(&mut self, ctx: &Context, settings: &mut Settings) {
+        let Some(broker) = &mut self.broker else {
+            return;
+        };
+        ctx.request_repaint_after(TICK);
+        let Some((devices, ended)) = broker
+            .mailbox
+            .lock()
+            .ok()
+            .map(|mut state| (state.devices.take(), state.ended))
+        else {
+            return;
+        };
+        if let Some(devices) = devices {
+            if let [camera] = devices.as_slice()
+                && settings.webcam_camera.is_none()
+            {
+                set_selection(settings, camera);
+            }
+            self.listed = Some(devices);
+            self.broker = None;
+        } else if ended || broker.started.elapsed() > START_LIMIT {
+            self.broker = None;
+            self.failed = true;
+        }
+    }
+
+    pub(super) fn show(&mut self, ui: &mut Ui, settings: &mut Settings) {
+        self.receive(ui.ctx(), settings);
+        let devices = self.listed.as_deref().unwrap_or_default();
+        let mut selection = None;
+        let mut refresh = false;
+        let saved = settings.webcam_camera.as_deref();
+        let show_disconnected = self.listed.is_some()
+            && saved.is_some_and(|id| devices.iter().all(|camera| camera.id != id));
+        let name = devices
+            .iter()
+            .find(|camera| Some(camera.id.as_str()) == saved)
+            .map(|camera| camera.name.as_str())
+            .or(settings.webcam_camera_name.as_deref())
+            .unwrap_or(if saved.is_some() {
+                "Previously selected camera"
+            } else {
+                "Choose camera"
+            });
+        let label = if show_disconnected {
+            format!("{name} (disconnected)")
+        } else {
+            name.to_owned()
+        };
+
+        ui.horizontal_wrapped(|ui| {
+            let field = ui.label("Camera");
+            let combo = egui::ComboBox::from_id_salt("settings camera")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    if devices.is_empty() {
+                        ui.label(if self.failed {
+                            "Camera discovery failed. Use Refresh to retry."
+                        } else if self.listed.is_some() {
+                            "No color camera found."
+                        } else {
+                            "Looking for color cameras…"
+                        });
+                    }
+                    for (i, camera) in devices.iter().enumerate() {
+                        let name = if devices
+                            .iter()
+                            .filter(|other| other.name == camera.name)
+                            .count()
+                            > 1
+                        {
+                            format!("{} ({})", camera.name, i + 1)
+                        } else {
+                            camera.name.clone()
+                        };
+                        if ui
+                            .selectable_label(saved == Some(camera.id.as_str()), name)
+                            .clicked()
+                        {
+                            selection = Some(camera.clone());
+                        }
+                    }
+                });
+            let _response = combo.response.labelled_by(field.id);
+            let clicked_refresh = ui
+                .add_enabled(self.broker.is_none(), egui::Button::new("Refresh"))
+                .clicked();
+            refresh = clicked_refresh
+                || (combo.inner.is_some()
+                    && self.listed.is_none()
+                    && self.broker.is_none()
+                    && !self.failed);
+        });
+        if let Some(selection) = selection {
+            set_selection(settings, &selection);
+        }
+        if refresh {
+            self.refresh();
+            ui.ctx().request_repaint_after(TICK);
+        }
+        if self.failed {
+            ui.label("Can’t find cameras. You can still attach a JPG.");
+        } else if show_disconnected {
+            ui.label("Reconnect this camera or choose another, then save your settings.");
+        }
+    }
+}
+
+pub(super) fn set_selection(settings: &mut Settings, camera: &Camera) {
+    settings.webcam_camera = Some(camera.id.clone());
+    settings.webcam_camera_name = Some(camera.name.clone());
+}
+
+/// One explicitly opened preview bound to a single sample and camera. Reconnect
+/// requests the same camera. Only Settings can switch a saved camera identity.
 pub(super) struct Preview {
     pub(super) sample: Uuid,
-    devices: Vec<Camera>,
+    root: PathBuf,
     selected: Option<String>,
+    active: Option<Camera>,
     broker: Option<Broker>,
-    next: Option<Request>,
-    stopping: bool,
+    start_requested: bool,
     latest: Option<Frame>,
     captured: Option<Frame>,
     accept: Option<Instant>,
@@ -241,24 +445,26 @@ pub(super) struct Preview {
 pub(super) enum Action {
     Keep,
     Cancel,
-    Remember(String),
-    Use(PhotoCopy, String),
+    Browse,
+    Settings,
+    Remember(Camera),
+    Use(PhotoCopy),
 }
 
 impl Preview {
-    pub(super) fn new(sample: Uuid, selected: Option<String>) -> Self {
+    pub(super) fn new(sample: Uuid, selected: Option<String>, root: PathBuf) -> Self {
         Self {
             sample,
             selected,
-            devices: Vec::new(),
+            root,
+            active: None,
             broker: None,
-            next: Some(Request::List),
-            stopping: false,
+            start_requested: true,
             latest: None,
             captured: None,
             accept: None,
             texture: None,
-            message: "Looking for color cameras…",
+            message: "Starting live preview…",
         }
     }
 
@@ -273,96 +479,63 @@ impl Preview {
         self.accept = None;
     }
 
-    fn queue(&mut self, next: Option<Request>) {
-        self.reset_frame();
-        if let Some(broker) = &mut self.broker {
-            broker.stop();
-            self.stopping = true;
-        }
-        self.next = next;
-    }
-
     fn fail(&mut self, message: &'static str) {
-        self.queue(None);
-        self.devices.clear();
-        self.next = Some(Request::List);
+        self.reset_frame();
+        self.active = None;
+        self.start_requested = false;
+        self.broker = None;
         self.message = message;
     }
 
-    fn choose(&mut self, choice: Option<String>) {
-        if choice != self.selected {
-            self.selected = choice;
-            self.queue(None);
-            self.message = "Choose Start preview to open this camera.";
-        }
-    }
-
-    fn selected_device(&self) -> Option<&Camera> {
-        self.devices
-            .iter()
-            .find(|device| Some(&device.id) == self.selected.as_ref())
-    }
-
-    fn can_start(&self) -> bool {
-        self.broker.is_none() && !self.stopping && self.selected_device().is_some()
-    }
-
-    fn tick(&mut self, ctx: &Context) {
-        ctx.request_repaint_after(TICK);
-        if self.stopping {
-            if !self.broker.as_mut().is_some_and(Broker::exited) {
-                return;
+    fn opened(&mut self, reply: OpenReply) -> Option<Camera> {
+        match reply {
+            Ok(camera) if self.selected.as_ref().is_none_or(|id| id == &camera.id) => {
+                self.selected = Some(camera.id.clone());
+                self.active = Some(camera.clone());
+                Some(camera)
             }
-            self.broker = None;
-            self.stopping = false;
+            Ok(_) | Err(Unavailable::Disconnected) => {
+                self.fail("The selected camera is disconnected. Reconnect it and try again, or choose another camera in Settings.");
+                None
+            }
+            Err(Unavailable::NoCamera) => {
+                self.fail("No color camera found. Connect one or attach a JPG.");
+                None
+            }
+            Err(Unavailable::ChooseCamera) => {
+                self.fail("Choose a camera in Settings to start live preview.");
+                None
+            }
         }
-        if let Some(request) = self.next.take() {
-            let id = match &request {
-                Request::List => None,
-                Request::Stream(id) => Some(id.as_str()),
-            };
-            match Broker::start(id) {
+    }
+
+    fn tick(&mut self, ctx: &Context) -> Option<Camera> {
+        if std::mem::take(&mut self.start_requested) {
+            match Broker::start(&self.root, Request::Preview(self.selected.as_deref())) {
                 Ok(broker) => {
-                    if id.is_some() {
-                        self.message = "Starting video preview…";
-                    }
+                    self.message = "Starting live preview…";
                     self.broker = Some(broker);
                 }
-                Err(_) => {
-                    self.message = "Camera support is unavailable. You can still attach a JPG.";
-                }
+                Err(_) => self.fail("Can’t open the bundled camera helper in local app data. You can still attach a JPG."),
             }
         }
-        let Some(broker) = &mut self.broker else {
-            return;
+        let broker = self.broker.as_mut()?;
+        ctx.request_repaint_after(TICK);
+        let (opened, new_frame, ended) = {
+            let Ok(mut mailbox) = broker.mailbox.lock() else {
+                return None;
+            };
+            (mailbox.opened.take(), mailbox.latest.take(), mailbox.ended)
         };
-        let Ok(mut mailbox) = broker.mailbox.lock() else {
-            return;
-        };
-        let list = mailbox.devices.take();
-        let new_frame = mailbox.latest.take();
-        let ended = mailbox.ended;
-        drop(mailbox);
-        if let Some(list) = list {
-            self.devices = list;
-            if self.message == "Looking for color cameras…" {
-                self.message = if self.devices.is_empty() {
-                    "No color camera found."
-                } else {
-                    "Choose a camera, then start preview."
-                };
-            }
-            self.broker = None;
-            return;
-        }
-        if ended || broker.exited() {
-            if self.message == "Looking for color cameras…" || self.devices.is_empty() {
-                self.message = "Could not find cameras. Refresh or attach a JPG.";
-                self.broker = None;
-            } else {
-                self.fail("Video stopped or Windows refused access. Reconnect explicitly or attach a JPG.");
-            }
-            return;
+        let timed_out = self.latest.as_ref().map_or_else(
+            || broker.started.elapsed() > START_LIMIT,
+            |frame| frame.at.elapsed() > FRESH_LIMIT,
+        );
+        let remembered = opened.and_then(|reply| self.opened(reply));
+        self.broker.as_ref()?;
+        if ended || (new_frame.is_none() && timed_out) {
+            self.fail("Video stopped or Windows refused access. Reconnect the camera and try again, check Settings, or attach a JPG.");
+            return None;
         }
         if let Some(frame) = new_frame {
             self.message = "";
@@ -380,80 +553,37 @@ impl Preview {
             }
             self.latest = Some(frame);
         }
-        if self.latest.as_ref().map_or_else(
-            || broker.started.elapsed() > START_LIMIT,
-            |f| f.at.elapsed() > FRESH_LIMIT,
-        ) {
-            if self.devices.is_empty() {
-                self.queue(None);
-                self.message = "Camera discovery timed out. Refresh or attach a JPG.";
-            } else {
-                self.fail("No current video frame. Reconnect explicitly or attach a JPG.");
-            }
-        }
+        remembered
     }
 
     pub(super) fn show(&mut self, ui: &mut Ui) -> Action {
-        self.tick(ui.ctx());
+        let remembered = self.tick(ui.ctx());
         if let Some(after) = self.accept
-            && self.latest.as_ref().is_some_and(|f| f.at > after)
-            && let (Some(captured), Some(selected)) = (&self.captured, &self.selected)
+            && self.latest.as_ref().is_some_and(|frame| frame.at > after)
+            && let Some(captured) = &self.captured
         {
             return if let Ok(photo) = captured.photo() {
-                Action::Use(photo, selected.clone())
+                Action::Use(photo)
             } else {
                 self.reset_frame();
                 self.message = "Could not prepare the captured JPG. Try again.";
                 Action::Keep
             };
         }
-        self.camera_selector(ui);
-        self.preview_image(ui);
-        self.buttons(ui)
-    }
-
-    fn camera_selector(&mut self, ui: &mut Ui) {
-        let mut choice = self.selected.clone();
-        ui.horizontal(|ui| {
-            ui.label("Camera");
-            let label = self
-                .selected_device()
-                .map_or("Choose camera", |device| device.name.as_str());
-            egui::ComboBox::from_id_salt("webcam camera")
-                .selected_text(label)
-                .show_ui(ui, |ui| {
-                    for (i, device) in self.devices.iter().enumerate() {
-                        let duplicate = self
-                            .devices
-                            .iter()
-                            .filter(|item| item.name == device.name)
-                            .count()
-                            > 1;
-                        let label = if duplicate {
-                            format!("{} ({})", device.name, i + 1)
-                        } else {
-                            device.name.clone()
-                        };
-                        ui.selectable_value(&mut choice, Some(device.id.clone()), label);
-                    }
-                });
-            if ui.button("Refresh").clicked() {
-                self.devices.clear();
-                self.queue(Some(Request::List));
-                self.message = "Looking for color cameras…";
-            }
-        });
-        self.choose(choice);
-    }
-
-    fn preview_image(&self, ui: &mut Ui) {
         if !self.message.is_empty() {
             ui.label(self.message);
+        }
+        if let Some(camera) = &self.active {
+            ui.weak(&camera.name);
         }
         if let Some(texture) = &self.texture {
             let mut size = texture.size_vec2();
             size *= (ui.available_width() / size.x).min(156.0 / size.y);
             ui.image((texture.id(), size));
+        }
+        match self.buttons(ui) {
+            Action::Keep => remembered.map_or(Action::Keep, Action::Remember),
+            action => action,
         }
     }
 
@@ -462,13 +592,18 @@ impl Preview {
             if ui.button("Cancel").clicked() {
                 return Action::Cancel;
             }
-            if ui
-                .add_enabled(self.can_start(), egui::Button::new("Start preview"))
-                .clicked()
-                && let Some(id) = self.selected.clone()
-            {
-                self.queue(Some(Request::Stream(id.clone())));
-                return Action::Remember(id);
+            if ui.button("Browse JPG…").clicked() {
+                return Action::Browse;
+            }
+            if self.broker.is_none() && !self.start_requested {
+                if ui.button("Retry camera").clicked() {
+                    self.start_requested = true;
+                    ui.ctx().request_repaint();
+                }
+                if ui.button("Camera settings").clicked() {
+                    return Action::Settings;
+                }
+                return Action::Keep;
             }
             let fresh = self
                 .latest
@@ -506,73 +641,56 @@ impl Preview {
 
 #[cfg(test)]
 mod tests {
-    use super::{devices, frame};
+    use super::{Camera, Preview, Unavailable, devices, frame, open_reply};
+    use std::{path::PathBuf, time::Instant};
+    use uuid::Uuid;
 
     #[test]
-    fn source_loss_clears_snapshot_and_requires_explicit_reconnect() -> super::Result<()> {
-        use super::{Preview, Request};
-        use std::time::Instant;
-        use uuid::Uuid;
-
+    fn source_loss_clears_snapshot_and_keeps_selected_identity() -> super::Result<()> {
         let sample = Uuid::from_u128(1);
-        let mut state = Preview::new(sample, Some("old-id".into()));
-        assert!(state.matches_target(Some(sample)));
-        assert!(!state.matches_target(Some(Uuid::from_u128(2))));
-        assert!(!state.matches_target(None));
-        state.latest = Some(frame(
+        let camera = Camera {
+            id: "built-in".into(),
+            name: "Color camera".into(),
+        };
+        let mut preview = Preview::new(sample, None, PathBuf::new());
+        assert!(preview.matches_target(Some(sample)));
+        assert!(!preview.matches_target(Some(Uuid::from_u128(2))));
+        assert!(!preview.matches_target(None));
+        assert_eq!(preview.opened(Ok(camera.clone())), Some(camera.clone()));
+        preview.latest = Some(frame(
             &mut [1, 0, 0, 0, 1, 0, 0, 0, 7, 8, 9, 255].as_slice(),
         )?);
-        state.captured.clone_from(&state.latest);
-        state.accept = Some(Instant::now());
-        state.fail("device lost");
-        assert!(state.latest.is_none() && state.captured.is_none() && state.accept.is_none());
-        assert!(matches!(state.next, Some(Request::List)));
-        assert_eq!(state.selected.as_deref(), Some("old-id"));
+        preview.captured.clone_from(&preview.latest);
+        preview.accept = Some(Instant::now());
+        preview.fail("device lost");
+        assert!(preview.latest.is_none() && preview.captured.is_none() && preview.accept.is_none());
+        assert!(!preview.start_requested);
+        assert_eq!(preview.selected.as_deref(), Some(camera.id.as_str()));
         Ok(())
     }
 
     #[test]
-    fn unplug_reorder_and_restore_never_select_or_start_another_camera() -> super::Result<()> {
-        use super::{Camera, Preview, Request};
-        use uuid::Uuid;
+    fn multiple_devices_missing_device_and_explicit_reconnect_never_switch() {
+        let sample = Uuid::from_u128(1);
+        let mut preview = Preview::new(sample, None, PathBuf::new());
+        assert!(preview.opened(Err(Unavailable::ChooseCamera)).is_none());
+        assert!(preview.selected.is_none() && !preview.start_requested);
+
         let builtin = Camera {
-            id: "builtin-id".into(),
-            name: "Camera".into(),
+            id: "built-in".into(),
+            name: "Color camera".into(),
         };
         let usb = Camera {
-            id: "usb-id".into(),
-            name: "Camera".into(),
+            id: "usb".into(),
+            name: "Color camera".into(),
         };
-        let mut state = Preview::new(Uuid::from_u128(1), Some(usb.id.clone()));
-        state.devices = vec![builtin.clone(), usb.clone()];
-        assert_eq!(state.selected_device().ok_or("USB unavailable")?.id, usb.id);
-        assert!(state.can_start());
-
-        state.fail("USB disconnected");
-        assert!(matches!(state.next.take(), Some(Request::List)));
-        state.devices = vec![builtin.clone()];
-        assert!(!state.can_start());
-        assert_eq!(state.selected.as_deref(), Some(usb.id.as_str()));
-
-        state.devices = vec![usb.clone(), builtin.clone()];
-        assert!(state.can_start() && state.next.is_none());
-        assert_eq!(
-            state.selected_device().ok_or("USB not restored")?.id,
-            usb.id
-        );
-
-        state.queue(Some(Request::Stream(usb.id.clone())));
-        state.choose(Some(builtin.id.clone()));
-        assert!(state.next.is_none());
-        assert_eq!(
-            state.selected_device().ok_or("built-in unavailable")?.id,
-            builtin.id
-        );
-        assert!(state.can_start());
-        state.choose(Some(usb.id.clone()));
-        assert_eq!(state.selected_device().ok_or("USB unavailable")?.id, usb.id);
-        assert!(state.can_start() && state.next.is_none());
-        Ok(())
+        let mut usb_preview = Preview::new(sample, Some(usb.id.clone()), PathBuf::new());
+        assert!(usb_preview.opened(Err(Unavailable::Disconnected)).is_none());
+        assert!(usb_preview.opened(Ok(builtin)).is_none());
+        assert_eq!(usb_preview.selected.as_deref(), Some(usb.id.as_str()));
+        assert!(!usb_preview.start_requested && usb_preview.active.is_none());
+        usb_preview.start_requested = true;
+        assert_eq!(usb_preview.opened(Ok(usb.clone())), Some(usb));
     }
 
     #[test]
@@ -585,6 +703,11 @@ mod tests {
             2, 0, 0, 0, 1, 0, 0, 0, b'a', 1, 0, 0, 0, b'b', 1, 0, 0, 0, b'a', 1, 0, 0, 0, b'c',
         ];
         assert!(devices(&mut duplicate.as_slice()).is_err());
+        assert_eq!(
+            open_reply(&mut [3, 0, 0, 0].as_slice())?,
+            Err(Unavailable::Disconnected)
+        );
+        assert!(open_reply(&mut [0xff; 4].as_slice()).is_err());
         Ok(())
     }
 }

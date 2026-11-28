@@ -528,6 +528,58 @@ fn saving_a_hidden_settings_edit_keeps_the_new_main_folder() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+#[test]
+fn camera_settings_save_and_cancel_use_the_stable_id_not_the_label() -> Result<()> {
+    use super::webcam::{Camera, set_selection};
+
+    let root = tempfile::tempdir()?;
+    let first = Camera {
+        id: "built-in-id".into(),
+        name: "Color Camera".into(),
+    };
+    let external = Camera {
+        id: "usb-stable-id".into(),
+        name: first.name.clone(),
+    };
+    let (_, mut app) = open_app(root.path())?;
+    assert!(app.webcam_target().is_none());
+    app.open_settings();
+    let draft = &mut app.settings.as_mut().ok_or("Missing Settings")?.draft;
+    draft.webcam_enabled = true;
+    set_selection(draft, &first);
+    app.cancel_settings();
+    assert!(!app.book.settings.webcam_enabled && app.book.settings.webcam_camera.is_none());
+
+    app.open_settings();
+    let draft = &mut app.settings.as_mut().ok_or("Missing Settings")?.draft;
+    draft.webcam_enabled = true;
+    set_selection(draft, &external);
+    app.save_settings();
+    drop(app);
+
+    let (_, mut reopened) = open_app(root.path())?;
+    assert!(reopened.book.settings.webcam_enabled);
+    assert_eq!(
+        reopened.book.settings.webcam_camera.as_deref(),
+        Some(external.id.as_str())
+    );
+    assert_eq!(
+        reopened.book.settings.webcam_camera_name.as_deref(),
+        Some(external.name.as_str())
+    );
+    assert!(
+        !root.path().join("camera").exists(),
+        "Settings save alone should not start the helper"
+    );
+    reopened.open_settings();
+    let draft = &mut reopened.settings.as_mut().ok_or("Missing Settings")?.draft;
+    set_selection(draft, &first);
+    reopened.cancel_settings();
+    assert_eq!(reopened.book.settings.webcam_camera, Some(external.id));
+    Ok(())
+}
+
 fn plain_email(draft: &str) -> Result<String> {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
 
