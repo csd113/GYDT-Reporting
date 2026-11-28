@@ -1,53 +1,23 @@
 diff --git a/gydt-sample-results-importer.php b/gydt-sample-results-importer.php
 --- a/gydt-sample-results-importer.php
 +++ b/gydt-sample-results-importer.php
-@@ -46,7 +46,7 @@
- add_action('admin_post_' . ImportHistory::ACTION, [ImportHistory::class, 'handle']);
- add_filter('wp_insert_post_empty_content', [Import::class, 'allowSavedZero'], PHP_INT_MAX, 2);
- AcfContract::register();
+@@ -49 +49 @@
 -Spectrum::register(__FILE__);
 +Spectrum::register();
- Updater::register();
- 
- function handleUpload(): never
 diff --git a/import.php b/import.php
 --- a/import.php
 +++ b/import.php
-@@ -38,6 +38,7 @@
-         'lysergamide_strip' => 'field_5fc6c54ceede7',
-         'client' => 'field_600218e2bf3c7',
-         'notes' => 'field_5c866202bd51e',
+@@ -40,0 +41 @@
 +        Spectrum::FIELD => Spectrum::KEY,
-     ];
- 
-     public static function allowed(): bool
-@@ -112,7 +113,7 @@
-             throw new Rejection('The photo is over the site’s size limit or JPEGs are disabled. No draft was saved.');
-         }
-         if ($package->spectrum !== null) {
+@@ -115 +116 @@
 -            Spectrum::preflight(strlen($package->spectrum));
 +            Spectrum::preflight($package);
-         }
-         return [self::acfValues($package->data), $localExport->format('Y-m-d H:i:s')];
-     }
-@@ -210,6 +211,7 @@
-         $postId = 0;
-         $attachment = 0;
-         $uploadPath = null;
+@@ -212,0 +214 @@
 +        $spectrumFile = null;
-         $inserted = [];
-         self::requireTransactions();
-         $origin = 'gydt-import:' . bin2hex(random_bytes(24));
-@@ -240,13 +242,16 @@
-         $commitSent = false;
-         // WordPress normally runs this even when PHP exits before the request can catch a failure.
-         // Never delete files on an uncertain commit, or if this transaction can no longer be proved.
+@@ -243 +245 @@
 -        $shutdown = static function () use ($origin, &$transactionStarted, &$savepoint, &$commitSent, &$inserted, &$uploadPath): void {
 +        $shutdown = static function () use ($origin, &$transactionStarted, &$savepoint, &$commitSent, &$inserted, &$uploadPath, &$spectrumFile): void {
-             if (!$transactionStarted || $commitSent) {
-                 return;
-             }
-             try {
+@@ -248,2 +250,5 @@
 -                if (self::rollbackWrite($origin, $savepoint, $inserted) && $uploadPath !== null) {
 -                    self::removeRolledBackPhoto($uploadPath);
 +                if (self::rollbackWrite($origin, $savepoint, $inserted)) {
@@ -55,60 +25,30 @@ diff --git a/import.php b/import.php
 +                        self::removeRolledBackPhoto($uploadPath);
 +                    }
 +                    Spectrum::removeRolledBack($spectrumFile);
-                 }
-             } finally {
-                 SubmissionLock::release();
-@@ -277,6 +282,11 @@
-                 );
-             }
- 
+@@ -279,0 +285,5 @@
 +            if ($package->spectrum !== null) {
 +                $spectrumId = Spectrum::attach($postId, $draft, $package, $spectrumFile, $inserted);
 +                $fields[Spectrum::FIELD] = $spectrumId;
 +                self::writeAcf($postId, [Spectrum::FIELD => $spectrumId]);
 +            }
-             if (!self::lockedTransaction()) {
-                 throw new UnknownOutcome();
-             }
-@@ -285,8 +295,8 @@
-             if ($attachment) {
-                 self::verifyPhoto($attachment, $postId, $draft['post_author'], $uploadPath, $package->photo);
-             }
+@@ -288,2 +298,2 @@
 -            if ($package->spectrum !== null) {
 -                Spectrum::insert($postId, $package);
 +            if ($package->spectrum !== null && !Spectrum::matchesMedia($postId, $package, $spectrumFile)) {
 +                throw new Rejection('WordPress couldn’t verify the existing Spectra File field and its attachment. No draft was saved.');
-             }
-             self::recordCompletion($postId, $package->fingerprint);
-             if (!self::hasCompletion($postId, $package->fingerprint)) {
-@@ -308,7 +318,9 @@
-                 SubmissionLock::rollback();
-             }
-             if ($rolledBack && !$commitSent) {
+@@ -311 +321,3 @@
 -                if ($uploadPath !== null && !self::removeRolledBackPhoto($uploadPath)) {
 +                $spectrumRemoved = Spectrum::removeRolledBack($spectrumFile);
 +                $photoRemoved = $uploadPath === null || self::removeRolledBackPhoto($uploadPath);
 +                if (!$spectrumRemoved || !$photoRemoved) {
-                     throw new Rejection('No draft was saved. Ask an administrator to check the Media Library upload before retrying.');
-                 }
-                 if ($failure instanceof Rejection || $failure instanceof Conflict) {
-@@ -770,7 +782,8 @@
-             if (self::completedFingerprint($id) !== $package->fingerprint) {
-                 throw new Conflict($id, 'No new draft was saved. Review the existing Test Result before trying again.');
-             }
+@@ -773 +785,2 @@
 -            if ($package->spectrum !== null && !Spectrum::matches($id, $package)) {
 +            if ($package->spectrum !== null && !Spectrum::matchesMedia($id, $package)
 +                && !Spectrum::matchesLegacy($id, $package)) {
-                 throw new UnknownOutcome();
-             }
-             return ['duplicate', $id];
 diff --git a/spectrum.php b/spectrum.php
 --- a/spectrum.php
 +++ b/spectrum.php
-@@ -6,16 +6,10 @@
- {
-     private const ACTION = 'gydt_download_result_spectrum';
-     private const SCHEMA = 'gydt_spectrum_schema';
+@@ -9,10 +9,4 @@
 -    private const MAX_STORAGE = 1073741824;
 -
 -    public static function register(string $pluginFile): void
@@ -123,13 +63,7 @@ diff --git a/spectrum.php b/spectrum.php
 +    public static function register(): void
 +    {
 +        add_filter('wp_check_filetype_and_ext', [self::class, 'manualZeroExtension'], PHP_INT_MAX, 3);
-         add_action('add_meta_boxes_results', [self::class, 'addBox']);
-         add_action('admin_post_' . self::ACTION, [self::class, 'download']);
-     }
-@@ -26,85 +20,200 @@
-         return $wpdb->prefix . 'gydt_spectra';
-     }
- 
+@@ -29,6 +23,103 @@
 -    public static function install(): void
 -    {
 -        global $wpdb;
@@ -239,7 +173,7 @@ diff --git a/spectrum.php b/spectrum.php
 +            }
 +            return true;
 +        };
-         try {
+@@ -36,13 +127,39 @@
 -            $wpdb->query($wpdb->prepare(
 -                'CREATE TABLE IF NOT EXISTS %i (
 -                    result_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
@@ -292,7 +226,7 @@ diff --git a/spectrum.php b/spectrum.php
 +            $inserted[] = $attachment;
 +            wp_update_attachment_metadata($attachment, wp_generate_attachment_metadata($attachment, $media['file']));
 +            return $attachment;
-         } finally {
+@@ -50,58 +167,50 @@
 -            $wpdb->suppress_errors($previous);
 -        }
 -    }
@@ -401,15 +335,6 @@ diff --git a/spectrum.php b/spectrum.php
 +        if (get_option(self::SCHEMA) !== '1') {
 +            return false;
 +        }
-         $row = $wpdb->get_row($wpdb->prepare(
-             'SELECT filename, sha256, SHA2(payload, 256) AS actual FROM %i WHERE result_id=%d',
-             self::table(), $id
-@@ -138,7 +247,7 @@
-             return;
-         }
-         add_meta_box(
+@@ -141 +250 @@
 -            'gydt-private-spectrum', 'OPUS spectrum', static function (\WP_Post $result): void {
 +            'gydt-private-spectrum', 'Legacy OPUS spectrum', static function (\WP_Post $result): void {
-                 $url = add_query_arg(['action' => self::ACTION, 'result' => $result->ID], admin_url('admin-post.php'));
-                 $url = wp_nonce_url($url, self::ACTION . ':' . $result->ID);
-                 printf('<p><a class="button" href="%s">Download spectrum</a></p>', esc_url($url));
