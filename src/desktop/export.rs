@@ -1,5 +1,6 @@
 use std::{
     fmt::Write as _,
+    io,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
     thread,
@@ -10,7 +11,7 @@ use gydt_results_compiler::{
     ConflictSnapshot, Contact, ExportRequest, OpusSource, PreparedExport, Profile, WriteError,
     WriteSuccess, prepare_profile_export_with_opus,
 };
-use jiff::Timestamp;
+use jiff::{Timestamp, civil::Date};
 
 use super::{
     archive,
@@ -20,9 +21,25 @@ use super::{
 
 #[derive(Clone)]
 pub(super) struct Selection {
-    pub(super) tabs: Vec<usize>,
+    // Open-tab identities, independent of position and archive sample UUID.
+    pub(super) tabs: Vec<u64>,
     pub(super) wordpress_only: bool,
     pub(super) confirmed: bool,
+}
+
+pub(super) struct Job {
+    pub(super) selection: Selection,
+    pub(super) revisions: Vec<u64>,
+}
+
+impl Job {
+    pub(super) fn targets(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.selection
+            .tabs
+            .iter()
+            .copied()
+            .zip(self.revisions.iter().copied())
+    }
 }
 
 pub(super) struct Destination {
@@ -44,9 +61,9 @@ pub(super) struct Prepared {
 }
 
 pub(super) enum Event {
-    Prepared(Selection, Vec<Draft>, Result<Prepared>),
+    Prepared(Job, Vec<Draft>, Result<Prepared>),
     Written(
-        Selection,
+        Job,
         Box<Plan>,
         std::result::Result<WriteSuccess, WriteError>,
     ),
@@ -101,7 +118,7 @@ impl Worker {
     pub(super) fn prepare(
         &mut self,
         ctx: &egui::Context,
-        selection: Selection,
+        job: Job,
         mut drafts: Vec<Draft>,
         destination: Destination,
         history: Vec<History>,
@@ -109,7 +126,7 @@ impl Worker {
     ) -> Result<()> {
         self.run(ctx, move || {
             let result = prepare_at(
-                &selection,
+                &job.selection,
                 &mut drafts,
                 &destination.folder,
                 &history,
@@ -117,25 +134,33 @@ impl Worker {
                 destination.opus_folder.as_deref(),
                 Some(&destination.app_data),
             );
-            Event::Prepared(selection, drafts, result)
+            Event::Prepared(job, drafts, result)
         })
     }
 
     pub(super) fn write(
         &mut self,
         ctx: &egui::Context,
-        selection: Selection,
+        job: Job,
         plan: Box<Plan>,
         profile: Arc<Profile>,
+        reporting_day: Date,
     ) -> Result<()> {
         self.run(ctx, move || {
             match check_existing(&plan, &profile) {
-                Ok(found) if found.is_empty() || selection.confirmed => {}
-                Ok(titles) => return Event::Repeat(selection, titles),
+                Ok(found) if found.is_empty() || job.selection.confirmed => {}
+                Ok(titles) => return Event::Repeat(job.selection, titles),
                 Err(error) => return Event::Blocked(error.to_string()),
             }
-            let written = plan.write();
-            Event::Written(selection, plan, written)
+            let written = plan.write_checked(|| {
+                if super::analysis_day().map_err(io::Error::other)? != reporting_day {
+                    return Err(io::Error::other(
+                        "The Vancouver reporting day changed. Choose today's export folder, then try Export again.",
+                    ));
+                }
+                Ok(())
+            });
+            Event::Written(job, plan, written)
         })
     }
 }
@@ -149,11 +174,27 @@ impl Plan {
         self.approved.directory()
     }
 
+    #[cfg(test)]
     pub(super) fn write(&self) -> std::result::Result<WriteSuccess, WriteError> {
+        self.write_checked(|| Ok(()))
+    }
+
+    fn write_checked(
+        &self,
+        before_publish: impl FnOnce() -> io::Result<()>,
+    ) -> std::result::Result<WriteSuccess, WriteError> {
         if let Some(app_data) = &self.app_data {
-            self.output
-                .write_with_local_staging(self.folder(), Some(&self.approved), app_data)
+            self.output.write_with_local_staging_checked(
+                self.folder(),
+                Some(&self.approved),
+                app_data,
+                before_publish,
+            )
         } else {
+            before_publish().map_err(|error| WriteError::Prepare {
+                path: self.folder().to_owned(),
+                error,
+            })?;
             self.output.write(self.folder(), Some(&self.approved))
         }
     }
@@ -275,18 +316,18 @@ fn check_existing(plan: &Plan, profile: &Profile) -> Result<Vec<String>> {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
     }) {
-        let Ok(existing) = archive::reopen(&plan.folder().join(filename), profile) else {
+        let Ok((existing_id, existing)) = archive::identity(&plan.folder().join(filename)) else {
             continue;
         };
         for draft in &plan.drafts {
-            let matches_title = draft.title == existing.title
+            let matches_title = draft.title == existing.submission_number
                 && (standard_title(&draft.title)
-                    || (draft.site == existing.site
+                    || (profile.site(draft.site.into()).token() == existing.site
                         && draft.analysis_date == existing.analysis_date));
-            if matches_title && existing.id != draft.id {
+            if matches_title && existing_id != draft.id {
                 return Err(format!("Sample number {} has already been used.", draft.title).into());
             }
-            if existing.id == draft.id {
+            if existing_id == draft.id {
                 same_sample.push(draft.title.clone());
             }
         }
@@ -336,6 +377,13 @@ pub(super) fn write_error(error: &WriteError) -> String {
         WriteError::Prepare { path, error } => format!("Can't use {}. {error}", path.display()),
         WriteError::Interrupted(failure) => {
             let mut message = format!("{failure} {}", failure.error);
+            if let Some(recovery) = &failure.recovery {
+                let _ = write!(
+                    message,
+                    "\nRetained originals: {}",
+                    recovery.join("originals").display()
+                );
+            }
             if !failure.written.is_empty() {
                 message.push_str("\nFiles already written:");
                 for path in &failure.written {

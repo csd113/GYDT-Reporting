@@ -439,6 +439,7 @@ impl Sequence {
             .iter()
             .map(|entry| entry.title.as_str())
             .chain(records.iter().map(|record| record.title.as_str()))
+            .filter(|title| title.starts_with(prefix))
             .filter_map(|title| {
                 let (candidate, serial) = split_title(title)?;
                 (candidate == prefix).then_some(serial)

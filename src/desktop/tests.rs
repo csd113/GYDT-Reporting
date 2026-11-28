@@ -420,6 +420,7 @@ fn startup_and_site_correction_leave_visit_proposals_unclaimed() -> Result<()> {
     let tab = app.tabs.first().ok_or("Missing corrected tab")?;
     assert_eq!(tab.draft.visit, "1");
     assert!(tab.origin.is_provisional());
+    app.dialog = None;
     app.close_tab(&ctx, 0);
     app.flush(true)?;
     assert_eq!(app.store.records()?.len(), 0);
@@ -1196,7 +1197,7 @@ fn linked_visit_contact_follows_actual_source_but_never_an_archive() -> Result<(
         );
     }
     let selection = Selection {
-        tabs: vec![third],
+        tabs: vec![app.tabs.get(third).ok_or("Missing third tab")?.token],
         wordpress_only: false,
         confirmed: false,
     };
@@ -1234,5 +1235,435 @@ fn primary_for_archive(app: &mut super::App, id: uuid::Uuid) -> Result<()> {
     assert_eq!(primary.draft.id, id);
     primary.draft.visit = "7".into();
     primary.origin = super::TabOrigin::Archive;
+    Ok(())
+}
+
+#[test]
+fn a_different_profile_zip_still_reserves_its_number() -> Result<()> {
+    let profile = fixture_profile()?;
+    let other = tempfile::tempdir()?;
+    write_fixture_profile(other.path(), ["other-east", "other-west"])?;
+    let other_profile = Profile::load(other.path())?;
+    let output = tempfile::tempdir()?;
+    let title = "3-901-2026-11-22-001";
+    let mut original = make_sample()?;
+    title.clone_into(&mut original.title);
+    export_sample(&original, &other_profile, output.path())?;
+    let zip = output.path().join(format!("{title}.zip"));
+    assert!(reopen(&zip, &profile).is_err());
+
+    let mut replacement = make_sample()?;
+    title.clone_into(&mut replacement.title);
+    let before = fs::read(&zip)?;
+    let selection = super::export::Selection {
+        tabs: vec![0],
+        wordpress_only: true,
+        confirmed: true,
+    };
+    let Err(error) = super::export::prepare(
+        &selection,
+        &mut [replacement],
+        output.path(),
+        &[],
+        &profile,
+        None,
+    ) else {
+        return Err("A different sample was allowed to overwrite the numbered ZIP.".into());
+    };
+    assert!(error.to_string().contains("has already been used"));
+    assert_eq!(fs::read(&zip)?, before);
+    Ok(())
+}
+
+#[test]
+fn startup_reminder_does_not_follow_an_archive_or_an_attached_photo() -> Result<()> {
+    use super::Dialog;
+
+    let records = tempfile::tempdir()?;
+    let output = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(records.path())?;
+    assert!(matches!(app.dialog, Some(Dialog::ExportFolder)));
+    assert!(app.deferred_photo_prompt.is_some());
+    let mut sample = make_sample()?;
+    "Synthetic-Reopen".clone_into(&mut sample.title);
+    export_sample(&sample, &app.profile, output.path())?;
+    app.open_zip(&ctx, &output.path().join("Synthetic-Reopen.zip"));
+    assert!(matches!(
+        app.tabs.last().map(|tab| tab.origin),
+        Some(super::TabOrigin::Archive)
+    ));
+    app.tick_daily_folder(&ctx);
+    assert!(app.dialog.is_none());
+
+    let records = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(records.path())?;
+    let photo_path = output.path().join("synthetic.jpg");
+    fs::write(
+        &photo_path,
+        sample.photo.ok_or("Missing synthetic photo")?.bytes()?,
+    )?;
+    app.add_photo(&ctx, &photo_path, false);
+    app.tick_daily_folder(&ctx);
+    assert!(app.dialog.is_none());
+    assert!(
+        app.tabs
+            .first()
+            .is_some_and(|tab| tab.draft.photo.is_some())
+    );
+    Ok(())
+}
+
+#[test]
+fn opus_snapshot_rejects_a_replaced_source_directory() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let source = root.path().join("source");
+    let output = root.path().join("output");
+    fs::create_dir(&source)?;
+    fs::create_dir(&output)?;
+    let selected = gydt_results_compiler::OpusSource::new(&source, &output)?;
+    fs::rename(&source, root.path().join("original"))?;
+    fs::create_dir(&source)?;
+    fs::write(source.join("Synthetic-A.0"), b"unrelated spectrum")?;
+    let mut sample = make_sample()?;
+    "Synthetic-A".clone_into(&mut sample.title);
+    let mut input = [sample.to_sample()?];
+    let result = gydt_results_compiler::prepare_profile_export_with_opus(
+        &mut input,
+        &fixture_profile()?,
+        ExportRequest {
+            contact: gydt_results_compiler::Contact::WordPressOnly,
+            exported_at: Timestamp::now(),
+            history: &[],
+            confirmed_reexports: &[],
+        },
+        Some(&selected),
+    );
+    let Err(error) = result else {
+        return Err("Files from a replaced OPUS directory were accepted.".into());
+    };
+    assert!(error.to_string().contains("OPUS folder changed"));
+    assert!(fs::read_dir(output)?.next().is_none());
+    Ok(())
+}
+
+#[test]
+fn closing_untouched_and_reopened_tabs_does_not_prompt() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let output = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(root.path())?;
+    app.dialog = None;
+    app.close_tab(&ctx, 0);
+    assert!(app.tabs.is_empty());
+    assert!(app.active.is_none());
+    assert!(app.dialog.is_none());
+
+    let mut sample = make_sample()?;
+    "Synthetic-Reopen".clone_into(&mut sample.title);
+    export_sample(&sample, &app.profile, output.path())?;
+    let path = output.path().join("Synthetic-Reopen.zip");
+    app.open_zip(&ctx, &path);
+    app.open_zip(&ctx, &path);
+    assert_eq!(app.tabs.len(), 2);
+    assert_eq!(
+        app.tabs.first().map(|tab| tab.draft.id),
+        app.tabs.last().map(|tab| tab.draft.id)
+    );
+    app.close_tab(&ctx, 1);
+    assert!(app.dialog.is_none());
+    let archived = app.tabs.first_mut().ok_or("Missing reopened tab")?;
+    "Edited after reopening".clone_into(&mut archived.draft.notes);
+    archived.edit();
+    app.close_tab(&ctx, 0);
+    assert!(
+        matches!(app.dialog, Some(super::Dialog::DiscardTab(ref request)) if request.warning == super::CloseWarning::Changed)
+    );
+    Ok(())
+}
+
+fn app_frame(
+    ctx: &eframe::egui::Context,
+    app: &mut super::App,
+    events: Vec<eframe::egui::Event>,
+) -> Result<eframe::egui::accesskit::TreeUpdate> {
+    use eframe::egui::{Pos2, RawInput, Rect, vec2};
+    let output = ctx.run_ui(
+        RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1136.0, 823.0))),
+            events,
+            ..RawInput::default()
+        },
+        |ui| app.show(ui),
+    );
+    Ok(output
+        .platform_output
+        .accesskit_update
+        .ok_or("Missing accessibility tree")?)
+}
+
+fn button(
+    tree: &eframe::egui::accesskit::TreeUpdate,
+    label: &str,
+) -> Result<(eframe::egui::accesskit::NodeId, eframe::egui::Pos2)> {
+    use eframe::egui::{accesskit::Role, pos2};
+    let (id, node) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Button && node.label() == Some(label))
+        .ok_or_else(|| format!("Missing button {label}"))?;
+    let rect = node.bounds().ok_or("Missing button bounds")?;
+    // AccessKit exposes these eGUI point coordinates as f64.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "The bounded test viewport uses egui f32 points"
+    )]
+    let point = pos2(
+        rect.min_x().midpoint(rect.max_x()) as f32,
+        rect.min_y().midpoint(rect.max_y()) as f32,
+    );
+    Ok((*id, point))
+}
+
+fn click(
+    ctx: &eframe::egui::Context,
+    app: &mut super::App,
+    point: eframe::egui::Pos2,
+) -> Result<eframe::egui::accesskit::TreeUpdate> {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let _ = app_frame(ctx, app, vec![Event::PointerMoved(point)])?;
+    for pressed in [true, false] {
+        let tree = app_frame(
+            ctx,
+            app,
+            vec![Event::PointerButton {
+                pos: point,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            }],
+        )?;
+        if !pressed {
+            return Ok(tree);
+        }
+    }
+    Err("The pointer was not released".into())
+}
+
+fn press(key: eframe::egui::Key) -> Vec<eframe::egui::Event> {
+    use eframe::egui::{Event, Modifiers};
+    [true, false]
+        .into_iter()
+        .map(|pressed| Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        })
+        .collect()
+}
+
+#[test]
+fn tab_close_pointer_and_keyboard_keep_edits_and_discard_only_the_named_tab() -> Result<()> {
+    use super::{CloseWarning, Dialog, TabOrigin};
+    use eframe::egui::{
+        Event, Key,
+        accesskit::{Action, ActionRequest, TreeId},
+    };
+
+    let root = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(root.path())?;
+    super::ui::configure(&ctx);
+    ctx.enable_accesskit();
+    app.dialog = None;
+    let other = app.active_token().ok_or("Missing untouched tab")?;
+    let mut sample = make_sample()?;
+    "Synthetic-Dirty".clone_into(&mut sample.title);
+    let saved_notes = sample.notes.clone();
+    app.push_tab(&ctx, sample, TabOrigin::Recorded);
+    let dirty = app.active_token().ok_or("Missing edited tab")?;
+    app.select_tab(&ctx, 0);
+
+    let _ = app_frame(&ctx, &mut app, Vec::new())?;
+    let tree = app_frame(&ctx, &mut app, Vec::new())?;
+    let (_, close) = button(&tree, "Close Synthetic-Dirty")?;
+    let tree = click(&ctx, &mut app, close)?;
+    assert!(
+        matches!(app.dialog, Some(Dialog::DiscardTab(ref req)) if req.token == dirty && req.warning == CloseWarning::NeverExported)
+    );
+    let (keep_id, _) = button(&tree, "Keep Editing")?;
+    assert_eq!(tree.focus, keep_id);
+    let _ = app_frame(&ctx, &mut app, press(Key::Escape))?;
+    assert!(app.dialog.is_none());
+    assert_eq!(app.active_token(), Some(other));
+    assert_eq!(
+        app.tabs.last().ok_or("Missing kept tab")?.draft.notes,
+        saved_notes
+    );
+
+    let tree = app_frame(&ctx, &mut app, Vec::new())?;
+    let (close_id, _) = button(&tree, "Close Synthetic-Dirty")?;
+    let _ = app_frame(
+        &ctx,
+        &mut app,
+        vec![Event::AccessKitActionRequest(ActionRequest {
+            action: Action::Focus,
+            target_tree: TreeId::ROOT,
+            target_node: close_id,
+            data: None,
+        })],
+    )?;
+    let tree = app_frame(&ctx, &mut app, press(Key::Enter))?;
+    assert!(matches!(app.dialog, Some(Dialog::DiscardTab(_))));
+    assert_eq!(tree.focus, button(&tree, "Keep Editing")?.0);
+    let _ = app_frame(&ctx, &mut app, press(Key::Enter))?;
+    assert!(app.dialog.is_none());
+    assert_eq!(app.active_token(), Some(other));
+
+    let tree = app_frame(&ctx, &mut app, Vec::new())?;
+    let (_, close) = button(&tree, "Close Synthetic-Dirty")?;
+    let tree = click(&ctx, &mut app, close)?;
+    let (_, discard) = button(&tree, "Discard and Close")?;
+    app.tabs.swap(0, 1);
+    app.select_tab(&ctx, 1);
+    let _ = click(&ctx, &mut app, discard)?;
+    assert!(app.dialog.is_none());
+    assert_eq!(app.tabs.len(), 1);
+    assert_eq!(app.active_token(), Some(other));
+    Ok(())
+}
+
+fn worker_event(app: &mut super::App) -> Result<super::export::Event> {
+    use std::time::{Duration, Instant};
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(event) = app.worker.poll() {
+            return Ok(event);
+        }
+        if Instant::now() >= until {
+            return Err("No export worker response".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn set_qa_destination(app: &mut super::App, path: &Path) -> Result<()> {
+    let day = super::analysis_day()?;
+    if !app.book.settings.select_folder(path.to_owned(), day, day) {
+        return Err("Missing synthetic output directory".into());
+    }
+    app.dialog = None;
+    Ok(())
+}
+
+#[test]
+fn tab_close_stays_guarded_after_failed_and_cancelled_exports_then_clears_on_success() -> Result<()>
+{
+    use super::{CloseWarning, Dialog, TabOrigin};
+    let root = tempfile::tempdir()?;
+    let output = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(root.path())?;
+    super::ui::configure(&ctx);
+    ctx.enable_accesskit();
+    set_qa_destination(&mut app, output.path())?;
+    let mut sample = make_sample()?;
+    "Synthetic-Export".clone_into(&mut sample.title);
+    app.push_tab(&ctx, sample, TabOrigin::Recorded);
+    app.book.settings.attach_opus = true;
+    app.book.settings.opus_folder = Some(root.path().join("unavailable"));
+    app.export_active(&ctx);
+    assert!(app.worker.busy());
+    app.close_tab(&ctx, 1);
+    assert_eq!(app.tabs.len(), 2);
+    let event = worker_event(&mut app)?;
+    app.handle_export(&ctx, event);
+    assert!(matches!(app.dialog, Some(Dialog::Notice(..))));
+    assert!(fs::read_dir(output.path())?.next().is_none());
+    app.dialog = None;
+    app.close_tab(&ctx, 1);
+    assert!(
+        matches!(app.dialog, Some(Dialog::DiscardTab(ref req)) if req.warning == CloseWarning::NeverExported)
+    );
+
+    app.dialog = None;
+    app.book.settings.attach_opus = false;
+    let destination = output.path().join("Synthetic-Export.zip");
+    fs::write(&destination, b"previous output")?;
+    app.export_active(&ctx);
+    let event = worker_event(&mut app)?;
+    app.handle_export(&ctx, event);
+    assert!(matches!(app.dialog, Some(Dialog::Overwrite(..))));
+    let _ = app_frame(&ctx, &mut app, Vec::new())?;
+    let _ = app_frame(&ctx, &mut app, press(eframe::egui::Key::Escape))?;
+    assert!(app.dialog.is_none());
+    assert_eq!(fs::read(&destination)?, b"previous output");
+    assert_eq!(
+        app.tabs.last().and_then(super::Tab::close_warning),
+        Some(CloseWarning::NeverExported)
+    );
+
+    fs::remove_file(&destination)?;
+    app.export_active(&ctx);
+    for _ in 0..2 {
+        let event = worker_event(&mut app)?;
+        app.handle_export(&ctx, event);
+    }
+    assert!(app.completion.is_some());
+    assert!(destination.is_file());
+    let tab = app.tabs.last_mut().ok_or("Missing exported tab")?;
+    assert_eq!(tab.close_warning(), None);
+    "An edit after the write".clone_into(&mut tab.draft.notes);
+    tab.edit();
+    app.close_tab(&ctx, 1);
+    assert!(
+        matches!(app.dialog, Some(Dialog::DiscardTab(ref req)) if req.warning == CloseWarning::Changed)
+    );
+    let _ = app_frame(&ctx, &mut app, Vec::new())?;
+    let _ = app_frame(&ctx, &mut app, press(eframe::egui::Key::Escape))?;
+    assert_eq!(
+        app.tabs.last().ok_or("Missing kept tab")?.draft.notes,
+        "An edit after the write"
+    );
+    app.open_zip(&ctx, &destination);
+    app.close_tab(&ctx, 2);
+    assert!(app.dialog.is_none());
+    Ok(())
+}
+
+#[test]
+fn worker_success_marks_only_the_captured_revision_of_the_stable_tab() -> Result<()> {
+    use super::{CloseWarning, TabOrigin};
+    let root = tempfile::tempdir()?;
+    let output = tempfile::tempdir()?;
+    let (ctx, mut app) = open_app(root.path())?;
+    set_qa_destination(&mut app, output.path())?;
+    let other = app.active_token().ok_or("Missing untouched tab")?;
+    let mut draft = make_sample()?;
+    "Synthetic-Captured".clone_into(&mut draft.title);
+    draft.code_word.clear();
+    let notes_at_export = draft.notes.clone();
+    app.push_tab(&ctx, draft, TabOrigin::Recorded);
+    let exported = app.active_token().ok_or("Missing captured tab")?;
+    app.export_active(&ctx);
+    let tab = app.tabs.last_mut().ok_or("Missing captured tab")?;
+    "An edit while exporting".clone_into(&mut tab.draft.notes);
+    "UPDATED01".clone_into(&mut tab.draft.code_word);
+    tab.edit();
+    app.tabs.swap(0, 1);
+    app.select_tab(&ctx, 1);
+    for _ in 0..2 {
+        let event = worker_event(&mut app)?;
+        app.handle_export(&ctx, event);
+    }
+    assert!(app.completion.is_some());
+    assert_eq!(app.active_token(), Some(other));
+    let tab = app.tabs.first().ok_or("Missing moved tab")?;
+    assert_eq!(tab.token, exported);
+    assert_eq!(tab.close_warning(), Some(CloseWarning::Changed));
+    assert_eq!(tab.draft.notes, "An edit while exporting");
+    assert_eq!(tab.draft.code_word, "UPDATED01");
+    assert_eq!(app.tabs.last().and_then(super::Tab::close_warning), None);
+    let archived = reopen(&output.path().join("Synthetic-Captured.zip"), &app.profile)?;
+    assert_eq!(archived.notes, notes_at_export);
+    assert_ne!(archived.code_word, "UPDATED01");
     Ok(())
 }

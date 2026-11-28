@@ -55,6 +55,7 @@ impl OpusSource {
         let name = member_name(title).ok_or_else(|| {
             ExportError::Opus("The submission number cannot be used as an exact OPUS filename. Use a safe submission number.".into())
         })?;
+        self.check_directory()?;
         // Compare the actual directory entry name, even on case-insensitive volumes.
         let mut exact = None;
         for entry in fs::read_dir(&self.directory)
@@ -110,7 +111,20 @@ impl OpusSource {
                 "{name} changed while reading it. Unload it in OPUS, then click Export again."
             )));
         }
+        self.check_directory()?;
         Ok((name, bytes))
+    }
+
+    fn check_directory(&self) -> Result<(), ExportError> {
+        if !same_file::Handle::from_path(&self.directory)
+            .is_ok_and(|handle| handle == *self.identity)
+        {
+            return Err(ExportError::Opus(
+                "The OPUS folder changed or became unavailable. Check it and try Export again."
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 }
 

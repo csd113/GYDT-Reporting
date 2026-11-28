@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, path::Path};
+use std::{collections::HashMap, hash::Hash, path::Path, sync::Arc};
 
 use eframe::egui::{
     self, Align, Button, Color32, Context, FontId, Frame, Id, Image, Key, Layout, Margin,
@@ -9,7 +9,7 @@ use gydt_results_compiler::{Catalogue, Profile, live_textures};
 use oxiarc_jpeg::{DecodeLimits, DecodeOptions, Decoder, EntropyCoding, PixelFormat};
 
 use super::{
-    APP_NAME, App, Completion, Dialog, SettingsPane, Tab, TabOrigin,
+    APP_NAME, App, CloseWarning, Completion, Dialog, DiscardTab, SettingsPane, Tab, TabOrigin,
     export::{self, Selection as ExportSelection},
     model::{
         COLOURS, Channel, Draft, PhotoCopy, Result, ResultRow, SHAPES, Selection, Site, Strip,
@@ -222,17 +222,26 @@ fn normalize_dashes(text: &str, join: bool) -> String {
     output
 }
 
+#[cfg(test)]
 fn search_substances<'a>(options: &'a [SubstanceChoice], query: &str) -> Vec<&'a SubstanceChoice> {
     if query.trim().is_empty() {
         return options.iter().collect();
     }
+    search_indices(options, query)
+        .into_iter()
+        .filter_map(|index| options.get(index))
+        .collect()
+}
+
+fn search_indices(options: &[SubstanceChoice], query: &str) -> Vec<usize> {
     let query = SearchKeys::new(query);
     if query.joined.is_empty() {
         return Vec::new();
     }
     let mut matches: Vec<_> = options
         .iter()
-        .filter_map(|choice| choice.match_rank(&query).map(|rank| (rank, choice)))
+        .enumerate()
+        .filter_map(|(index, choice)| choice.match_rank(&query).map(|rank| (rank, index)))
         .collect();
     matches.sort_by_key(|(rank, _)| *rank);
     matches.into_iter().map(|(_, choice)| choice).collect()
@@ -358,8 +367,9 @@ impl App {
             }
             if edit.contact == Some(ContactEdit::Detach)
                 && let Some(tab) = self.tabs.get_mut(index)
+                && tab.contact_source.take().is_some()
             {
-                tab.contact_source = None;
+                tab.edit();
             }
             if edit.date_changed {
                 self.rescan();
@@ -429,11 +439,11 @@ impl App {
                     ui.set_clip_rect(ui.clip_rect().intersect(viewport));
                     ScrollArea::vertical()
                         .max_width(width)
-                        .id_salt(("sample-form", index))
+                        .id_salt(("sample-form", tab.token))
                         .max_height(height)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            ui.push_id(("sample", index), |ui| {
+                            ui.push_id(("sample", tab.token), |ui| {
                                 sample_form(
                                     ui,
                                     tab,
@@ -545,21 +555,11 @@ impl App {
     fn sample_tabs(&self, ui: &mut Ui) -> TabAction {
         ui.spacing_mut().item_spacing.x = 4.0;
         let mut action = TabAction::None;
-        for (index, tab) in self.tabs.iter().enumerate() {
+        let labels = tab_labels(&self.tabs);
+        for (index, (tab, text)) in self.tabs.iter().zip(&labels).enumerate() {
             let selected = self.active == Some(index) && !self.show_settings;
-            let show_full = self.tabs.iter().any(|other| {
-                other.draft.title != tab.draft.title
-                    && short_tab(&other.draft) == short_tab(&tab.draft)
-            });
-            let text = if show_full {
-                tab.draft.tab_label().into()
-            } else {
-                short_tab(&tab.draft)
-            };
             let (select, close) = ui
-                .push_id((index, tab.draft.id), |ui| {
-                    sample_tab(ui, &text, tab, selected)
-                })
+                .push_id(tab.token, |ui| sample_tab(ui, text, tab, selected))
                 .inner;
             if select {
                 action = TabAction::Select(index);
@@ -622,8 +622,8 @@ impl App {
                 let mut export = false;
                 ui.add_enabled_ui(enabled, |ui| {
                     let tab = self.active.and_then(|index| self.tabs.get(index));
-                    let width = ui.available_width();
-                    column_pair(ui, width - 722.0, 16.0, |ui, left| {
+                    let (status, gap) = footer_columns(ui.available_width());
+                    column_pair(ui, status, gap, |ui, left| {
                         if left {
                             if let Some(error) = self.save_error.as_ref().or(self.status.as_ref()) {
                                 ui.add(
@@ -650,7 +650,7 @@ impl App {
             Layout::left_to_right(Align::Center),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;
-                let format_width = width - 102.0 - 170.0 - 32.0;
+                let format_width = (width - 102.0 - 170.0 - 32.0).max(0.0);
                 let label = ui.add_sized(
                     [102.0, CONTROL_HEIGHT],
                     egui::Label::new(bold("Export format", 14.0)),
@@ -675,6 +675,14 @@ impl App {
                 .iter()
                 .any(|history| history.id == tab.draft.id)
     }
+}
+
+fn footer_columns(width: f32) -> (f32, f32) {
+    // Preserve the status column at the minimum supported window size by
+    // shrinking the format picker before its neighbouring controls.
+    let spare = width - (width - 104.0).clamp(484.0, 706.0).min(width);
+    let gap = spare.min(16.0);
+    (spare - gap, gap)
 }
 
 #[cfg(target_os = "macos")]
@@ -710,6 +718,32 @@ pub(super) fn short_tab(draft: &Draft) -> String {
     } else {
         draft.tab_label().into()
     }
+}
+
+fn tab_labels(tabs: &[Tab]) -> Vec<String> {
+    let mut labels: Vec<_> = tabs.iter().map(|tab| short_tab(&tab.draft)).collect();
+    let mut by_short = HashMap::with_capacity(labels.len());
+    for (label, tab) in labels.iter().zip(tabs) {
+        let title = tab.draft.title.as_str();
+        by_short
+            .entry(label.as_str())
+            .and_modify(|first: &mut Option<&str>| {
+                if *first != Some(title) {
+                    *first = None;
+                }
+            })
+            .or_insert(Some(title));
+    }
+    let expand: Vec<_> = labels
+        .iter()
+        .map(|label| by_short.get(label.as_str()) == Some(&None))
+        .collect();
+    for ((label, tab), expand) in labels.iter_mut().zip(tabs).zip(expand) {
+        if expand {
+            tab.draft.tab_label().clone_into(label);
+        }
+    }
+    labels
 }
 
 fn sample_tab(ui: &mut Ui, text: &str, tab: &Tab, selected: bool) -> (bool, bool) {
@@ -1594,6 +1628,57 @@ struct Search {
     query: String,
     index: usize,
     last_frame: Option<u64>,
+    matches: Arc<[usize]>,
+}
+
+impl Search {
+    fn refresh(&mut self, options: &[SubstanceChoice]) {
+        self.index = 0;
+        let query = self.query.trim();
+        self.matches = if query.is_empty() {
+            Arc::default()
+        } else {
+            search_indices(options, query).into()
+        };
+    }
+}
+
+struct PickerResults<'a> {
+    options: &'a [SubstanceChoice],
+    matches: Option<&'a [usize]>,
+}
+
+impl<'a> PickerResults<'a> {
+    fn len(&self) -> usize {
+        self.matches.map_or(self.options.len() + 1, <[usize]>::len)
+    }
+
+    fn get(&self, row: usize) -> Option<(Option<Selection>, &'a str)> {
+        let index = if let Some(matches) = self.matches {
+            *matches.get(row)?
+        } else {
+            let Some(index) = row.checked_sub(1) else {
+                return Some((None, "Blank"));
+            };
+            index
+        };
+        self.options
+            .get(index)
+            .map(|choice| (Some(choice.value), choice.label.as_str()))
+    }
+}
+
+fn scroll_to_picker_row(ui: &mut Ui, target: usize, first: usize, height: f32, stride: f32) {
+    // Keyboard navigation must reach rows not built this frame. The profile
+    // limits the catalogue to 10,000 records, so the row numbers fit in u16.
+    let target = f32::from(u16::try_from(target).unwrap_or_default());
+    let first = f32::from(u16::try_from(first).unwrap_or_default());
+    let area = ui.max_rect();
+    let top = area.top() + (target - first) * stride;
+    ui.scroll_to_rect(
+        Rect::from_min_size(egui::pos2(area.left(), top), vec2(0.0, height)),
+        None,
+    );
 }
 
 fn substance(
@@ -1604,9 +1689,8 @@ fn substance(
     width: f32,
     error: bool,
 ) -> Response {
-    let selected = options
-        .iter()
-        .find(|choice| Some(choice.value) == *value)
+    let selected = value
+        .and_then(|selected| options.iter().find(|choice| choice.value == selected))
         .map_or("", |choice| choice.label.as_str());
     let search_id = ui.make_persistent_id((name, "search"));
     let response = combo_control(ui, name, selected, width, error, |ui, button| {
@@ -1657,34 +1741,30 @@ fn substance_menu(
     }
     let reset = opened || field.changed();
     if reset {
-        search.index = 0;
+        search.refresh(options);
     }
-    let query = search.query.trim();
-    let choices: Vec<_> = std::iter::once((None, "Blank"))
-        .filter(|_| query.is_empty())
-        .chain(
-            search_substances(options, query)
-                .into_iter()
-                .map(|choice| (Some(choice.value), choice.label.as_str())),
-        )
-        .collect();
-    if choices.is_empty() {
+    let results = PickerResults {
+        options,
+        matches: (!search.query.trim().is_empty()).then_some(search.matches.as_ref()),
+    };
+    let count = results.len();
+    if count == 0 {
         hint(ui, "No matching substances.");
     }
     if down {
-        search.index = (search.index + 1).min(choices.len().saturating_sub(1));
+        search.index = (search.index + 1).min(count.saturating_sub(1));
     }
     if up {
         search.index = search.index.saturating_sub(1);
     }
     if enter
         && !opened
-        && let Some((choice, _)) = choices.get(search.index)
+        && let Some((choice, _)) = results.get(search.index)
     {
-        *value = *choice;
+        *value = choice;
         ui.close();
     }
-    let keyboard = down || up || !query.is_empty();
+    let keyboard = down || up || results.matches.is_some();
     let row_height = ui.spacing().interact_size.y.min(26.0);
     let spacing = ui.spacing().item_spacing.y.min(3.0);
     let row_stride = row_height + spacing;
@@ -1698,8 +1778,8 @@ fn substance_menu(
         .rev()
         .find(|&rows| row_stride * f32::from(rows) <= list_height)
         .unwrap_or(1);
-    if choices.len() > usize::from(visible_rows) {
-        hint(ui, &format!("{} results · scroll", choices.len()));
+    if count > usize::from(visible_rows) {
+        hint(ui, &format!("{count} results · scroll"));
     }
     let mut scroll = ScrollArea::vertical()
         .id_salt((search_id, "results"))
@@ -1707,23 +1787,27 @@ fn substance_menu(
     if reset {
         scroll = scroll.vertical_scroll_offset(0.0);
     }
-    scroll.show(ui, |ui| {
+    ui.scope(|ui| {
         ui.spacing_mut().interact_size.y = row_height;
         ui.spacing_mut().item_spacing.y = spacing;
-        for (index, (choice, label)) in choices.iter().enumerate() {
-            let active = keyboard && search.index == index;
-            let response = ui.add_sized(
-                [ui.available_width(), row_height],
-                egui::Button::selectable(active || *value == *choice, *label).truncate(),
-            );
-            if active && (down || up) {
-                response.scroll_to_me(None);
+        scroll.show_rows(ui, row_height, count, |ui, rows| {
+            if (down || up) && count > 0 {
+                scroll_to_picker_row(ui, search.index, rows.start, row_height, row_stride);
             }
-            if response.clicked() {
-                *value = *choice;
-                ui.close();
+            for index in rows {
+                if let Some((choice, label)) = results.get(index) {
+                    let active = keyboard && search.index == index;
+                    let response = ui.add_sized(
+                        [ui.available_width(), row_height],
+                        egui::Button::selectable(active || *value == choice, label).truncate(),
+                    );
+                    if response.clicked() {
+                        *value = choice;
+                        ui.close();
+                    }
+                }
             }
-        }
+        });
     });
     ui.data_mut(|data| data.insert_temp(search_id, search));
 }
@@ -2507,6 +2591,7 @@ enum ModalAction {
     Keep,
     WordPressOnly,
     Dismiss,
+    DiscardTab,
     Folder,
     Photo,
     #[cfg(target_os = "windows")]
@@ -2558,7 +2643,9 @@ impl App {
                     self.dialog_contents(ui, &mut dialog)
                 }
             });
-        if !response.should_close() {
+        if response.should_close() {
+            self.handle_modal_action(ctx, dialog, ModalAction::Dismiss);
+        } else {
             self.handle_modal_action(ctx, dialog, response.inner);
         }
     }
@@ -2566,7 +2653,16 @@ impl App {
     fn handle_modal_action(&mut self, ctx: &Context, dialog: Dialog, action: ModalAction) {
         match action {
             ModalAction::Keep => self.dialog = Some(dialog),
-            ModalAction::Dismiss => {}
+            ModalAction::Dismiss => {
+                if let Dialog::DiscardTab(request) = dialog {
+                    self.keep_editing(ctx, &request);
+                }
+            }
+            ModalAction::DiscardTab => {
+                if let Dialog::DiscardTab(request) = dialog {
+                    self.discard_tab(ctx, request.token);
+                }
+            }
             ModalAction::Folder => self.choose_folder(false),
             ModalAction::WordPressOnly => {
                 if let Dialog::ContactUnavailable(mut selection) = dialog {
@@ -2619,17 +2715,13 @@ impl App {
                 }
             }
             ModalAction::Overwrite => {
-                if let Dialog::Overwrite(selection, plan) = dialog {
-                    self.write_plan(ctx, selection, plan);
+                if let Dialog::Overwrite(job, plan) = dialog {
+                    self.write_plan(ctx, job, plan);
                 }
             }
             ModalAction::Export => {
                 if let Dialog::Batch(selected, wordpress_only) = dialog {
-                    let tabs = selected
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(index, selected)| selected.then_some(index))
-                        .collect();
+                    let tabs = selected_tabs(&self.tabs, &selected);
                     self.begin_export(
                         ctx,
                         ExportSelection {
@@ -2645,6 +2737,7 @@ impl App {
 
     fn dialog_contents(&self, ui: &mut Ui, dialog: &mut Dialog) -> ModalAction {
         match dialog {
+            Dialog::DiscardTab(request) => self.discard_tab_contents(ui, request),
             Dialog::ExportFolder => {
                 modal_title(ui, "Choose today’s export folder");
                 ui.label("Select where to save today’s exports. Your prior folder won’t be used unless you pick it again. You can keep entering samples if you cancel.");
@@ -2740,6 +2833,35 @@ impl App {
         }
     }
 
+    fn discard_tab_contents(&self, ui: &mut Ui, request: &mut DiscardTab) -> ModalAction {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.token == request.token) else {
+            return ModalAction::Dismiss;
+        };
+        modal_title(ui, "Discard this sample?");
+        ui.label(bold(tab.draft.tab_label(), 14.0));
+        ui.label(match request.warning {
+            CloseWarning::NeverExported => "This sample hasn’t been exported. Close the tab and discard it?",
+            CloseWarning::Changed => "This sample has changes that haven’t been exported. Close the tab and discard those changes?",
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let keep = primary_button(ui, "Keep Editing", 128.0, true);
+            let discard = ui.button("Discard and Close");
+            if std::mem::take(&mut request.focus_default) {
+                // A keyboard event that opened the dialog must not also
+                // activate either of its buttons in the opening frame.
+                keep.request_focus();
+                ModalAction::Keep
+            } else if keep.clicked() {
+                ModalAction::Dismiss
+            } else if discard.clicked() {
+                ModalAction::DiscardTab
+            } else {
+                ModalAction::Keep
+            }
+        })
+        .inner
+    }
+
     fn batch_picker(
         &self,
         ui: &mut Ui,
@@ -2756,14 +2878,10 @@ impl App {
             }
         });
         ui.checkbox(wordpress_only, "WordPress only");
-        let tabs = selected
-            .iter()
-            .enumerate()
-            .filter_map(|(i, selected)| selected.then_some(i))
-            .collect::<Vec<_>>();
+        let tabs = selected_tabs(&self.tabs, selected);
         let first = tabs
             .first()
-            .and_then(|i| self.tabs.get(*i))
+            .and_then(|token| self.tabs.iter().find(|tab| tab.token == *token))
             .map(|tab| &tab.draft);
         let selection = ExportSelection {
             tabs,
@@ -2820,9 +2938,17 @@ impl App {
     }
 }
 
+fn selected_tabs(tabs: &[Tab], selected: &[bool]) -> Vec<u64> {
+    tabs.iter()
+        .zip(selected)
+        .filter_map(|(tab, &selected)| selected.then_some(tab.token))
+        .collect()
+}
+
 fn dialog_key(dialog: &Dialog) -> &'static str {
     match dialog {
         Dialog::ExportFolder => "missing export folder",
+        Dialog::DiscardTab(_) => "discard sample warning",
         Dialog::PhotoPrompt => "photo reminder",
         Dialog::ReplacePhoto(..) => "replace photo",
         Dialog::PhotoOptions => "photo menu",
@@ -2980,6 +3106,106 @@ mod substance_search_tests {
             .map(|c| c.value)
             .collect();
         assert_eq!(ids, [3, 2, 1, 4].map(Selection::Catalogue));
+    }
+
+    #[test]
+    fn keyboard_can_select_beyond_the_visible_picker_rows() {
+        use eframe::egui::{Context, Event, Id, Key, Modifiers, RawInput, Shape};
+
+        fn includes_text(shape: &Shape, text: &str) -> bool {
+            match shape {
+                Shape::Text(value) => value.galley.text() == text,
+                Shape::Vec(shapes) => shapes.iter().any(|shape| includes_text(shape, text)),
+                _ => false,
+            }
+        }
+
+        let ctx = Context::default();
+        ctx.global_style_mut(|style| {
+            style.scroll_animation = eframe::egui::style::ScrollAnimation::none();
+        });
+        let id = Id::new("test virtual picker");
+        let options: Vec<_> = (1..=30)
+            .map(|i| choice(i, &format!("Synthetic result {i:02}"), "alias"))
+            .collect();
+        let mut value = None;
+        let mut frame = |event: Option<Event>| {
+            ctx.run_ui(
+                RawInput {
+                    events: event.into_iter().collect(),
+                    ..RawInput::default()
+                },
+                |ui| {
+                    super::substance_menu(ui, id, &mut value, &options, 155.0);
+                },
+            )
+        };
+        let key = |key| {
+            Some(Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            })
+        };
+        let _ = frame(None::<Event>);
+        for _ in 0..12 {
+            let _ = frame(key(Key::ArrowDown));
+        }
+        let _ = frame(key(Key::ArrowUp));
+        let visible = frame(None);
+        assert!(
+            visible
+                .shapes
+                .iter()
+                .any(|shape| includes_text(&shape.shape, "Synthetic result 11"))
+        );
+        let _ = frame(key(Key::Enter));
+        assert_eq!(value, Some(Selection::Catalogue(11)));
+    }
+
+    #[test]
+    fn tab_labels_disambiguate_only_different_titles() -> super::Result<()> {
+        use super::{Draft, Site, Tab, TabOrigin};
+
+        let ctx = eframe::egui::Context::default();
+        let day = "2026-11-22".parse()?;
+        let mut tabs = Vec::new();
+        for (token, title) in [
+            (0, "3-901-2026-11-22-001"),
+            (1, "3-901-2026-11-22-001"),
+            (2, "3-902-2026-11-22-001"),
+            (3, "3-901-2026-11-22-002"),
+        ] {
+            let mut draft = Draft::fresh(Site::ExampleEast, day)?;
+            title.clone_into(&mut draft.title);
+            tabs.push(Tab::new(&ctx, token, draft, TabOrigin::Archive));
+        }
+        assert_eq!(
+            super::tab_labels(&tabs),
+            [
+                "3-901-2026-11-22-001",
+                "3-901-2026-11-22-001",
+                "3-902-2026-11-22-001",
+                "Sample 002"
+            ]
+        );
+        tabs.remove(2);
+        assert_eq!(
+            super::tab_labels(&tabs),
+            ["Sample 001", "Sample 001", "Sample 002"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn footer_keeps_status_and_controls_inside_the_minimum_window() {
+        for width in [580.0, 680.0, 812.0, 1096.0] {
+            let (status, gap) = super::footer_columns(width);
+            assert!(status >= 80.0);
+            assert!((484.0..=706.0).contains(&(width - status - gap)));
+        }
     }
 
     #[test]

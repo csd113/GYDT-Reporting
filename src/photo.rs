@@ -85,14 +85,14 @@ impl Photo {
         })
         .ok_or_else(framing_error)?;
 
-        let bytes = if let Some(mut copy) = copy {
-            copy.extend_from_slice(self.bytes.get(next..).ok_or_else(framing_error)?);
-            Cow::Owned(copy)
-        } else {
-            Cow::Borrowed(self.bytes.as_slice())
+        let Some(mut copy) = copy else {
+            // Construction already decoded these exact bytes, and the marker
+            // pass above confirmed that they need no importer-side stripping.
+            return Ok(Cow::Borrowed(self.bytes.as_slice()));
         };
-        validate(&bytes, Metadata::Importer)?;
-        Ok(bytes)
+        copy.extend_from_slice(self.bytes.get(next..).ok_or_else(framing_error)?);
+        validate(&copy, Metadata::Importer)?;
+        Ok(Cow::Owned(copy))
     }
 }
 

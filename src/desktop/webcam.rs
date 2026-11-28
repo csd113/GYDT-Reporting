@@ -52,7 +52,7 @@ enum Request<'a> {
 struct Frame {
     width: usize,
     height: usize,
-    bgra: Arc<[u8]>,
+    bgra: Arc<Vec<u8>>,
     at: Instant,
 }
 
@@ -199,7 +199,7 @@ fn frame(pipe: &mut impl Read) -> io::Result<Frame> {
     Ok(Frame {
         width,
         height,
-        bgra: data.into(),
+        bgra: Arc::new(data),
         at: Instant::now(),
     })
 }
@@ -696,7 +696,7 @@ mod tests {
             let frame = super::Frame {
                 width,
                 height,
-                bgra: [85, 100, 120, 255].repeat(width * height).into(),
+                bgra: std::sync::Arc::new([85, 100, 120, 255].repeat(width * height)),
                 at: Instant::now(),
             };
             assert_eq!(frame.image().size, texture_size);

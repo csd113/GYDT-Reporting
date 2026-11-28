@@ -24,7 +24,7 @@ use gydt_results_compiler::{Profile, WriteError};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
 use self::{
-    export::{Event, Plan, Selection, Worker},
+    export::{Event, Job, Plan, Selection, Worker},
     model::{Draft, PhotoCopy, Result, Site, parse_visit, valid_date},
     store::{Book, Record, Sequence, Settings, Store},
 };
@@ -100,6 +100,9 @@ impl TabOrigin {
 }
 
 struct Tab {
+    token: u64,
+    revision: u64,
+    last_export: Option<u64>,
     draft: Draft,
     origin: TabOrigin,
     missing: bool,
@@ -132,12 +135,15 @@ struct ContactSource {
 }
 
 impl Tab {
-    fn new(ctx: &Context, draft: Draft, origin: TabOrigin) -> Self {
+    fn new(ctx: &Context, token: u64, draft: Draft, origin: TabOrigin) -> Self {
         let thumbnail = draft
             .photo
             .as_ref()
             .and_then(|photo| ui::thumbnail(ctx, photo));
         Self {
+            token,
+            revision: 0,
+            last_export: (origin == TabOrigin::Archive || draft.exported).then_some(0),
             draft,
             origin,
             missing: false,
@@ -148,6 +154,19 @@ impl Tab {
     }
 
     fn edit(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+        self.schedule_save();
+    }
+
+    fn close_warning(&self) -> Option<CloseWarning> {
+        match self.last_export {
+            Some(exported) => (exported != self.revision).then_some(CloseWarning::Changed),
+            None => (self.revision != 0 || self.draft.has_entry_data())
+                .then_some(CloseWarning::NeverExported),
+        }
+    }
+
+    fn schedule_save(&mut self) {
         let save = match self.origin {
             TabOrigin::Proposed | TabOrigin::SameVisit => self.draft.has_entry_data(),
             TabOrigin::Recorded => true,
@@ -158,8 +177,22 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CloseWarning {
+    NeverExported,
+    Changed,
+}
+
+struct DiscardTab {
+    token: u64,
+    warning: CloseWarning,
+    return_focus: Option<(u64, egui::Id)>,
+    focus_default: bool,
+}
+
 enum Dialog {
     ExportFolder,
+    DiscardTab(DiscardTab),
     PhotoPrompt,
     ReplacePhoto(usize, PendingPhoto),
     PhotoOptions,
@@ -168,7 +201,7 @@ enum Dialog {
     Webcam(Box<webcam::Preview>),
     Batch(Vec<bool>, bool),
     Repeat(Selection, Vec<String>),
-    Overwrite(Selection, Box<Plan>),
+    Overwrite(Job, Box<Plan>),
     Notice(&'static str, String),
 }
 
@@ -203,6 +236,7 @@ struct App {
     orbit: egui::TextureHandle,
     sequence: Sequence,
     tabs: Vec<Tab>,
+    next_tab_token: u64,
     active: Option<usize>,
     dialog: Option<Dialog>,
     settings: Option<SettingsPane>,
@@ -213,7 +247,8 @@ struct App {
     save_error: Option<String>,
     history_pending: bool,
     folder_prompt_day: Option<Date>,
-    deferred_photo_prompt: bool,
+    deferred_photo_prompt: Option<u64>,
+    next_folder_check: Option<(Date, Instant)>,
     #[cfg(target_os = "windows")]
     last_work_area: Option<[i32; 4]>,
 }
@@ -240,6 +275,7 @@ impl App {
             orbit: ctx.load_texture("Indigo Orbit", pixels, egui::TextureOptions::LINEAR),
             sequence: Sequence::default(),
             tabs: Vec::new(),
+            next_tab_token: 0,
             active: None,
             dialog: None,
             settings: None,
@@ -250,7 +286,8 @@ impl App {
             save_error: None,
             history_pending: false,
             folder_prompt_day: None,
-            deferred_photo_prompt: false,
+            deferred_photo_prompt: None,
+            next_folder_check: None,
             #[cfg(target_os = "windows")]
             last_work_area: None,
         };
@@ -260,7 +297,10 @@ impl App {
             && app.book.settings.today_folder(day).is_none()
             && matches!(app.dialog, Some(Dialog::PhotoPrompt))
         {
-            app.deferred_photo_prompt = true;
+            app.deferred_photo_prompt = app
+                .active
+                .and_then(|index| app.tabs.get(index))
+                .map(|tab| tab.token);
             app.ask_for_daily_folder(day);
         }
         app
@@ -286,11 +326,25 @@ impl App {
             ctx.request_repaint_after(Duration::from_secs(seconds));
         }
         if self.dialog.is_none() && !self.show_settings && !self.worker.busy() {
-            if self.folder_prompt_day != Some(today)
-                && self.book.settings.today_folder(today).is_none()
+            let monotonic = Instant::now();
+            if self
+                .next_folder_check
+                .is_none_or(|(day, deadline)| today != day || monotonic >= deadline)
             {
-                self.ask_for_daily_folder(today);
-            } else if std::mem::take(&mut self.deferred_photo_prompt) && self.active.is_some() {
+                self.next_folder_check = Some((today, monotonic + Duration::from_secs(60)));
+                if self.folder_prompt_day != Some(today)
+                    && self.book.settings.today_folder(today).is_none()
+                {
+                    self.ask_for_daily_folder(today);
+                    return;
+                }
+            }
+            if let Some(token) = self.deferred_photo_prompt.take()
+                && self
+                    .active
+                    .and_then(|index| self.tabs.get(index))
+                    .is_some_and(|tab| tab.token == token && tab.draft.photo.is_none())
+            {
                 self.dialog = Some(Dialog::PhotoPrompt);
             }
         }
@@ -350,7 +404,8 @@ impl App {
         &self,
         selection: &Selection,
     ) -> std::result::Result<Vec<Draft>, &'static str> {
-        selection.tabs.iter().map(|&index| {
+        selection.tabs.iter().map(|&token| {
+            let index = self.tab_index(token).ok_or("Open the sample again before exporting.")?;
             let tab = self.tabs.get(index).ok_or("Open the sample again before exporting.")?;
             let mut draft = tab.draft.clone();
             if tab.contact_source.is_some() && !selection.wordpress_only {
@@ -417,7 +472,8 @@ impl App {
                 && tab.draft != draft
             {
                 tab.draft = draft;
-                tab.edit();
+                // A proposed number is not an edit made by the operator.
+                tab.schedule_save();
             }
         }
     }
@@ -463,7 +519,9 @@ impl App {
 
     fn push_tab(&mut self, ctx: &Context, draft: Draft, origin: TabOrigin) {
         self.sequence.reserve(&draft.title);
-        self.tabs.push(Tab::new(ctx, draft, origin));
+        self.tabs
+            .push(Tab::new(ctx, self.next_tab_token, draft, origin));
+        self.next_tab_token = self.next_tab_token.wrapping_add(1);
         self.select_tab(ctx, self.tabs.len() - 1);
     }
 
@@ -480,7 +538,53 @@ impl App {
         });
     }
 
+    fn tab_index(&self, token: u64) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.token == token)
+    }
+
+    fn active_token(&self) -> Option<u64> {
+        self.active
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.token)
+    }
+
     fn close_tab(&mut self, ctx: &Context, index: usize) {
+        if self.worker.busy() || self.dialog.is_some() {
+            return;
+        }
+        let Some(tab) = self.tabs.get(index) else {
+            return;
+        };
+        let token = tab.token;
+        if let Some(warning) = tab.close_warning() {
+            let prior_focus = ctx.memory_mut(|memory| {
+                let prior = memory.focused()?;
+                memory.surrender_focus(prior);
+                Some(prior)
+            });
+            self.dialog = Some(Dialog::DiscardTab(DiscardTab {
+                token,
+                warning,
+                return_focus: self.active_token().zip(prior_focus),
+                focus_default: true,
+            }));
+        } else {
+            self.discard_tab(ctx, token);
+        }
+    }
+
+    fn keep_editing(&self, ctx: &Context, request: &DiscardTab) {
+        if let Some((tab, focus)) = request.return_focus
+            && self.active_token() == Some(tab)
+        {
+            ctx.memory_mut(|memory| memory.request_focus(focus));
+        }
+    }
+
+    fn discard_tab(&mut self, ctx: &Context, token: u64) {
+        let Some(index) = self.tab_index(token) else {
+            return;
+        };
         if let Err(error) = self.flush(true) {
             self.notice("Can't save the sample", error.to_string());
             return;
@@ -827,6 +931,9 @@ impl App {
     }
 
     fn dropped(&mut self, ctx: &Context) {
+        if matches!(self.dialog, Some(Dialog::DiscardTab(_))) {
+            return;
+        }
         let drop = ctx.input(|input| input.raw.dropped_files.clone());
         if drop.is_empty() || self.worker.busy() {
             return;
@@ -884,11 +991,11 @@ fn nearest_directory(path: &Path) -> Option<&Path> {
 
 impl App {
     fn export_active(&mut self, ctx: &Context) {
-        if let Some(index) = self.active {
+        if let Some(token) = self.active_token() {
             self.begin_export(
                 ctx,
                 Selection {
-                    tabs: vec![index],
+                    tabs: vec![token],
                     wordpress_only: false,
                     confirmed: false,
                 },
@@ -898,8 +1005,10 @@ impl App {
 
     fn begin_export(&mut self, ctx: &Context, selection: Selection) {
         let mut missing = Vec::new();
-        for index in &selection.tabs {
-            if let Some(tab) = self.tabs.get_mut(*index) {
+        for &token in &selection.tabs {
+            if let Some(index) = self.tab_index(token)
+                && let Some(tab) = self.tabs.get_mut(index)
+            {
                 let before = tab.draft.clone();
                 tab.draft.normalize();
                 if before != tab.draft {
@@ -907,7 +1016,7 @@ impl App {
                 }
                 tab.missing = tab.draft.has_missing();
                 if tab.missing {
-                    missing.push(*index);
+                    missing.push(index);
                 }
             }
         }
@@ -964,10 +1073,17 @@ impl App {
         } else {
             None
         };
+        let Some(job) = self.export_job(selection) else {
+            self.notice(
+                "Can't prepare export",
+                "Open the sample again before exporting.",
+            );
+            return;
+        };
         self.status = None;
         if let Err(error) = self.worker.prepare(
             ctx,
-            selection,
+            job,
             drafts,
             export::Destination {
                 folder,
@@ -978,18 +1094,37 @@ impl App {
             self.profile.clone(),
         ) {
             self.notice("Can't prepare export", error.to_string());
-        }
-    }
-
-    fn show_overwrite_or_write(&mut self, ctx: &Context, selection: Selection, plan: Box<Plan>) {
-        if plan.approved.filenames().len() > 0 {
-            self.dialog = Some(Dialog::Overwrite(selection, plan));
         } else {
-            self.write_plan(ctx, selection, plan);
+            self.completion = None;
         }
     }
 
-    fn write_plan(&mut self, ctx: &Context, selection: Selection, plan: Box<Plan>) {
+    fn export_job(&self, selection: Selection) -> Option<Job> {
+        let revisions = selection
+            .tabs
+            .iter()
+            .map(|token| {
+                self.tabs
+                    .iter()
+                    .find(|tab| tab.token == *token)
+                    .map(|tab| tab.revision)
+            })
+            .collect::<Option<_>>()?;
+        Some(Job {
+            selection,
+            revisions,
+        })
+    }
+
+    fn show_overwrite_or_write(&mut self, ctx: &Context, job: Job, plan: Box<Plan>) {
+        if plan.approved.filenames().len() > 0 {
+            self.dialog = Some(Dialog::Overwrite(job, plan));
+        } else {
+            self.write_plan(ctx, job, plan);
+        }
+    }
+
+    fn write_plan(&mut self, ctx: &Context, job: Job, plan: Box<Plan>) {
         let Ok(day) = analysis_day() else {
             self.notice(
                 "Can’t check today’s date",
@@ -1006,79 +1141,77 @@ impl App {
             self.ask_for_daily_folder(day);
             return;
         }
-        if let Err(error) = self
-            .worker
-            .write(ctx, selection, plan, self.profile.clone())
-        {
+        if let Err(error) = self.worker.write(ctx, job, plan, self.profile.clone(), day) {
             self.notice("Can't start the export", error.to_string());
         }
     }
 
-    fn retain_codes(&mut self, selection: &Selection, drafts: &[Draft]) {
-        for (index, draft) in selection.tabs.iter().zip(drafts) {
-            if let Some(tab) = self.tabs.get_mut(*index)
+    fn retain_codes(&mut self, job: &Job, drafts: &[Draft]) {
+        for ((token, revision), draft) in job.targets().zip(drafts) {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.token == token)
+                && tab.revision == revision
                 && tab.draft.code_word != draft.code_word
             {
                 tab.draft.code_word.clone_from(&draft.code_word);
-                tab.edit();
+                // This generated code is part of the worker's captured draft.
+                tab.schedule_save();
             }
         }
     }
 
     fn handle_export(&mut self, ctx: &Context, event: Event) {
         match event {
-            Event::Prepared(selection, drafts, result) => {
-                self.retain_codes(&selection, &drafts);
+            Event::Prepared(job, drafts, result) => {
+                self.retain_codes(&job, &drafts);
                 if let Err(error) = self.flush(true) {
                     self.notice("Can't save the sample", error.to_string());
                     return;
                 }
                 match result {
                     Ok(prepared)
-                        if selection.confirmed || prepared.needs_confirmation.is_empty() =>
+                        if job.selection.confirmed || prepared.needs_confirmation.is_empty() =>
                     {
-                        self.show_overwrite_or_write(ctx, selection, Box::new(prepared.plan));
+                        self.show_overwrite_or_write(ctx, job, Box::new(prepared.plan));
                     }
                     Ok(prepared) => {
-                        self.dialog = Some(Dialog::Repeat(selection, prepared.needs_confirmation));
+                        self.dialog =
+                            Some(Dialog::Repeat(job.selection, prepared.needs_confirmation));
                     }
                     Err(error) => self.notice("Can't prepare export", error.to_string()),
                 }
             }
-            Event::Written(selection, mut plan, Err(WriteError::Conflicts(snapshot))) => {
+            Event::Written(job, mut plan, Err(WriteError::Conflicts(snapshot))) => {
                 plan.approved = snapshot;
-                self.show_overwrite_or_write(ctx, selection, plan);
+                self.show_overwrite_or_write(ctx, job, plan);
             }
             Event::Written(_, _, Err(error)) => {
                 self.notice("Export incomplete", export::write_error(&error));
             }
-            Event::Written(selection, plan, Ok(success)) => {
+            Event::Written(job, plan, Ok(success)) => {
                 let warning = success.cleanup_warning.map(|warning| warning.to_string());
-                self.complete(&selection, &plan, success.written, warning);
+                self.complete(&job, &plan, success.written, warning);
             }
             Event::Repeat(selection, names) => self.dialog = Some(Dialog::Repeat(selection, names)),
             Event::Blocked(message) => self.notice("Export stopped", message),
         }
     }
 
-    fn complete(
-        &mut self,
-        selection: &Selection,
-        plan: &Plan,
-        files: Vec<PathBuf>,
-        warning: Option<String>,
-    ) {
-        for (index, draft) in selection.tabs.iter().zip(plan.drafts()) {
+    fn complete(&mut self, job: &Job, plan: &Plan, files: Vec<PathBuf>, warning: Option<String>) {
+        for ((token, revision), draft) in job.targets().zip(plan.drafts()) {
             self.book.add_history(draft);
             let already_saved = self.records.iter().any(|record| record.id == draft.id);
-            if let Some(tab) = self.tabs.get_mut(*index) {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.token == token) {
+                tab.last_export = Some(revision);
+                if tab.revision != revision {
+                    continue;
+                }
                 tab.draft.exported = true;
                 tab.draft.suggested_title = None;
                 tab.draft.suggested_visit = None;
                 if !already_saved {
                     tab.origin = TabOrigin::Recorded;
                 }
-                tab.edit();
+                tab.schedule_save();
             }
         }
         self.history_pending = true;
@@ -1106,10 +1239,10 @@ impl eframe::App for App {
         {
             self.dialog = None;
         }
+        self.dropped(ctx);
         if let Some(event) = self.worker.poll() {
             self.handle_export(ctx, event);
         }
-        self.dropped(ctx);
         self.tick_daily_folder(ctx);
         if self.show_settings
             && self.dialog.is_none()
@@ -1136,6 +1269,14 @@ impl eframe::App for App {
         }
         if self.save_error.is_none() && self.tabs.iter().any(|tab| tab.changed.is_some()) {
             ctx.request_repaint_after(SAVE_DELAY);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // AppKit Quit can reach on_exit without an ordinary window-close request.
+        if let Err(error) = self.flush(true) {
+            eprintln!("{APP_NAME}: Can't save pending local data on quit. {error}");
         }
     }
 

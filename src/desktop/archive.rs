@@ -45,13 +45,10 @@ pub(super) fn read_file(path: &Path, max: u64, description: &str) -> Result<Vec<
 }
 
 pub(super) fn reopen(path: &Path, profile: &Profile) -> Result<Draft> {
-    let bytes = read_file(path, MAX_ZIP, "ZIP")?;
-    let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice()))
-        .map_err(|_| invalid("This file is an invalid or unsupported sample ZIP."))?;
-    validate_archive(&mut archive, &bytes)?;
-    let members = read_members(&mut archive)?;
-    let manifest: Manifest = serde_json::from_slice(member(&members, MANIFEST)?)?;
-    let id = manifest.validate(&members, profile.catalogue())?;
+    let (members, id, manifest) = validated_members(path)?;
+    if manifest.catalogue_version != profile.catalogue().version() {
+        return Err("This ZIP uses a different substance catalogue.".into());
+    }
     let payload: Payload = serde_json::from_slice(member(&members, DATA)?)?;
     let stem = filename_stem(&payload.submission_number);
     if members.keys().any(|name| {
@@ -73,6 +70,34 @@ pub(super) fn reopen(path: &Path, profile: &Profile) -> Result<Draft> {
         })
         .transpose()?;
     payload.draft(id, profile, photo)
+}
+
+// An existing package can reserve its submission number even if its
+// catalogue, site or photo cannot be reopened in the current app profile.
+pub(super) fn identity(path: &Path) -> Result<(Uuid, ExportIdentity)> {
+    let (members, id, _) = validated_members(path)?;
+    let payload = serde_json::from_slice(member(&members, DATA)?)?;
+    Ok((id, payload))
+}
+
+#[derive(Deserialize)]
+pub(super) struct ExportIdentity {
+    pub(super) submission_number: String,
+    pub(super) site: String,
+    pub(super) analysis_date: String,
+}
+
+type Members = BTreeMap<String, Vec<u8>>;
+
+fn validated_members(path: &Path) -> Result<(Members, Uuid, Manifest)> {
+    let bytes = read_file(path, MAX_ZIP, "ZIP")?;
+    let mut archive = ZipArchive::new(Cursor::new(bytes.as_slice()))
+        .map_err(|_| invalid("This file is an invalid or unsupported sample ZIP."))?;
+    validate_archive(&mut archive, &bytes)?;
+    let members = read_members(&mut archive)?;
+    let manifest: Manifest = serde_json::from_slice(member(&members, MANIFEST)?)?;
+    let id = manifest.validate(&members)?;
+    Ok((members, id, manifest))
 }
 
 fn read_members<R: std::io::Read + std::io::Seek>(
@@ -340,12 +365,21 @@ fn unique_files<'de, D: Deserializer<'de>>(
 }
 
 impl Manifest {
-    fn validate(&self, members: &BTreeMap<String, Vec<u8>>, catalogue: &Catalogue) -> Result<Uuid> {
+    fn validate(&self, members: &Members) -> Result<Uuid> {
         if self.format_version != 1 {
             return Err("This ZIP format version is unsupported.".into());
         }
-        if self.catalogue_version != catalogue.version() {
-            return Err("This ZIP uses a different substance catalogue.".into());
+        if !self
+            .catalogue_version
+            .strip_prefix("sha256:")
+            .is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+        {
+            return Err("The ZIP has an invalid substance catalogue version.".into());
         }
         let id: Uuid = self.sample_id.parse()?;
         if id.get_version() != Some(Version::Random)

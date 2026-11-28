@@ -254,7 +254,7 @@ impl PreparedExport {
         folder: &Path,
         approval: Option<&ConflictSnapshot>,
     ) -> Result<WriteSuccess, WriteError> {
-        self.write_staged(folder, approval, None)
+        self.write_staged(folder, approval, None, || Ok(()))
     }
 
     /// Stages private temporary files and retained originals under app data.
@@ -269,9 +269,24 @@ impl PreparedExport {
         approval: Option<&ConflictSnapshot>,
         app_data: &Path,
     ) -> Result<WriteSuccess, WriteError> {
+        self.write_with_local_staging_checked(folder, approval, app_data, || Ok(()))
+    }
+
+    /// Runs a final check after staging and inspecting conflicts, before any
+    /// output is published. If the check fails, the destination is untouched.
+    ///
+    /// # Errors
+    /// Returns any error from `write_with_local_staging` or the final check.
+    pub fn write_with_local_staging_checked(
+        &self,
+        folder: &Path,
+        approval: Option<&ConflictSnapshot>,
+        app_data: &Path,
+        before_publish: impl FnOnce() -> io::Result<()>,
+    ) -> Result<WriteSuccess, WriteError> {
         let stage = local_stage(folder, app_data)?;
         let _lock = stage_lock(&stage)?;
-        self.write_staged(folder, approval, Some(&stage))
+        self.write_staged(folder, approval, Some(&stage), before_publish)
     }
 
     fn write_staged(
@@ -279,6 +294,7 @@ impl PreparedExport {
         folder: &Path,
         approval: Option<&ConflictSnapshot>,
         stage_home: Option<&Path>,
+        before_publish: impl FnOnce() -> io::Result<()>,
     ) -> Result<WriteSuccess, WriteError> {
         let (current, _guard) = self.inspect_guarded(folder, true, stage_home)?;
         if approval.map_or(!current.existing.is_empty(), |approved| {
@@ -288,7 +304,7 @@ impl PreparedExport {
         }
 
         let mut stage = Staging::new_in(&current, stage_home.unwrap_or(&current.directory))?;
-        let result = self.publish(folder, &mut stage, stage_home);
+        let result = self.publish(folder, &mut stage, stage_home, before_publish);
         stage.finish(result)
     }
 
@@ -297,6 +313,7 @@ impl PreparedExport {
         folder: &Path,
         stage: &mut Staging<'_>,
         stage_home: Option<&Path>,
+        before_publish: impl FnOnce() -> io::Result<()>,
     ) -> Result<(), WriteError> {
         let staged = stage.prepare(&self.outputs)?;
         // The write-side destination lock is already held.
@@ -304,10 +321,15 @@ impl PreparedExport {
         if fresh != *stage.destination {
             return Err(WriteError::Conflicts(fresh));
         }
+        before_publish().map_err(|error| preparation(&stage.destination.directory, error))?;
         for (output, file) in self.outputs.iter().zip(staged) {
             if let Err(error) = stage.install(&output.name, file) {
                 return Err(stage.interruption(error));
             }
+        }
+        if stage.destination.existing.is_empty() {
+            sync_directory(&stage.destination.directory)
+                .map_err(|error| stage.interruption(error))?;
         }
         Ok(())
     }
@@ -574,7 +596,21 @@ impl<'a> Staging<'a> {
         if !self.destination.existing.is_empty() {
             fs::create_dir(root.join("originals"))
                 .and_then(|()| sync_directory(root))
-                .and_then(|()| sync_directory(&self.destination.directory))
+                .and_then(|()| {
+                    // Retained originals must be reachable before removing
+                    // the destination entry, even with app-local staging.
+                    let parent = root
+                        .parent()
+                        .ok_or_else(|| io::Error::other("The staging folder has no parent."))?;
+                    sync_directory(parent)?;
+                    if parent != self.destination.directory {
+                        for ancestor in parent.ancestors().skip(1).take(2) {
+                            sync_directory(ancestor)?;
+                        }
+                        sync_directory(&self.destination.directory)?;
+                    }
+                    Ok(())
+                })
                 .map_err(|error| preparation(root, error))?;
         }
         outputs
@@ -895,6 +931,29 @@ mod tests {
     }
 
     #[test]
+    fn prepublication_check_leaves_an_approved_original_in_place() -> TestResult {
+        let app = tempfile::tempdir()?;
+        let destination = tempfile::tempdir()?;
+        let original = destination.path().join(OUTPUT);
+        fs::write(&original, b"original export")?;
+        let export = plan();
+        let approval = export.inspect_with_local_staging(destination.path(), app.path())?;
+        let result = export.write_with_local_staging_checked(
+            destination.path(),
+            Some(&approval),
+            app.path(),
+            || Err(io::Error::other("reporting day changed")),
+        );
+        assert!(matches!(result, Err(WriteError::Prepare { .. })));
+        assert_eq!(fs::read(original)?, b"original export");
+        assert_eq!(
+            export.inspect_with_local_staging(destination.path(), app.path())?,
+            approval
+        );
+        Ok(())
+    }
+
+    #[test]
     fn desktop_staging_publishes_and_preserves_old_work_in_both_folders() -> TestResult {
         let app = tempfile::tempdir()?;
         let destination = tempfile::tempdir()?;
@@ -1061,7 +1120,7 @@ mod tests {
         let original = prior_stage.directory.path().join("originals").join(OUTPUT);
         drop(prior_stage);
 
-        let outcome = plan.publish(directory.path(), &mut new_stage, None);
+        let outcome = plan.publish(directory.path(), &mut new_stage, None, || Ok(()));
         let Err(WriteError::RecoveryRequired(found)) = new_stage.finish(outcome) else {
             return Err("publication bypassed the newly retained original".into());
         };
@@ -1205,7 +1264,7 @@ mod tests {
             let mut stage = Staging::new(&snapshot)?;
             let root = stage.directory.path().to_owned();
             let outcome = if succeeds {
-                plan.publish(directory.path(), &mut stage, None)
+                plan.publish(directory.path(), &mut stage, None, || Ok(()))
             } else {
                 Err(preparation(
                     directory.path(),
